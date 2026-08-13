@@ -14,7 +14,7 @@ javascript/anime/src/pt-br/animefire.js
 ## URL para adicionar no Mangayomi
 
 ```text
-https://raw.githubusercontent.com/945gfff/AnimeFire-Mangayomi/refs/heads/principal/anime_index.json
+https://raw.githubusercontent.com/945gfff/AnimeFire-Mangayomi/main/anime_index.json
 ```
 
 A branch deste repositório é `principal`.
