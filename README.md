@@ -1,35 +1,61 @@
-# AnimeFire — Mangayomi 0.8.3
+# AnimeFire — repositório de extensão para Mangayomi
 
-Repositório remoto da extensão AnimeFire para Mangayomi 0.8.3.
+Este repositório foi preparado no formato de repositório remoto do Mangayomi.
 
 ## Estrutura
 
 ```text
 anime_index.json
-SHA256.txt
-README.md
-javascript/anime/src/pt-br/animefire.js
+javascript/
+└── anime/
+    └── src/
+        └── pt-br/
+            └── animefire.js
 ```
 
-## URL para adicionar no Mangayomi
+## Antes de publicar
 
-```text
-https://raw.githubusercontent.com/945gfff/AnimeFire-Mangayomi/main/anime_index.json
-```
+1. Crie um repositório público no GitHub chamado `AnimeFire-Mangayomi`.
+2. Envie estes arquivos mantendo a estrutura das pastas.
+3. Abra `anime_index.json`.
+4. Substitua `SEU_USUARIO` pelo seu nome de utilizador do GitHub.
+5. Salve.
 
-A branch deste repositório é `principal`.
+Depois, no Mangayomi, o endereço do repositório será:
 
-## O que a extensão faz
+`https://raw.githubusercontent.com/SEU_USUARIO/AnimeFire-Mangayomi/main/anime_index.json`
 
-- Popular
-- Mais recentes / em lançamento
+O Mangayomi utiliza um índice JSON para descobrir fontes e carrega o código indicado por `sourceCodeUrl`. A documentação atual descreve esse modelo e classifica anime com `itemType = 1`; fontes JavaScript podem ser carregadas remotamente pelo índice. 
+
+## O que esta fonte implementa
+
 - Pesquisa
-- Página de detalhes
-- Lista de episódios
-- Extração de MP4/M3U8 quando expostos pela página
-- Suporte a player Blogger público quando o AnimeFire o expõe
-- Compatibilidade com o fluxo `getVideoList` do Mangayomi
+- Popular/início
+- Em lançamento
+- Detalhes
+- Sinopse
+- Géneros
+- Capas
+- Episódios
+- Reprodução através de URLs diretas expostas pelo episódio/player
+- Consulta o endpoint `/video/{slug}/{episódio}` para obter as fontes reais
+- Suporte a MP4, HLS e URLs GoogleVideo assinadas
+- Fallback para HTML e iframes públicos
+- Procura em iframes públicos
 
-## Observação
+## Importante sobre download
 
-O AnimeFire informa que os vídeos são fornecidos por terceiros. Se um episódio não expuser uma fonte pública acessível, a extensão não pode fabricar uma URL de vídeo.
+O botão de download do Mangayomi só poderá funcionar quando a fonte disponibilizar um URL de mídia que o Mangayomi consiga consumir. Esta extensão não contorna DRM, login, paywall ou outras proteções.
+
+## Instalação no Mangayomi
+
+Depois de publicar no GitHub:
+
+**Mangayomi → Mais → Definições → Browse → adicionar repositório**
+
+Cole:
+
+`https://raw.githubusercontent.com/SEU_USUARIO/AnimeFire-Mangayomi/main/anime_index.json`
+
+Depois procure por **AnimeFire** e instale/ative a fonte.
+
