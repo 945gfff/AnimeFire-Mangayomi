@@ -1,0 +1,1 @@
+510cdd0289920140aad2b90859e2dac5191a56a3560cc59e1e3071cd31c23fdd  javascript/anime/src/pt-br/animefire.js
