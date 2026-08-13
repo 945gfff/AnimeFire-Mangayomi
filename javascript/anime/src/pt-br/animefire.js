@@ -357,7 +357,8 @@ class DefaultExtension extends MProvider {
     const url = this.decodeUrl(value);
     if (!/^https?:\/\//i.test(url)) return;
 
-    if (/\.(?:m3u8|m3u|mp4)(?:[?#]|$)/i.test(url)) {
+    if (/\.(?:m3u8|m3u|mp4)(?:[?#]|$)/i.test(url) ||
+        /^https:\/\/www\.blogger\.com\/video\.g\?token=/i.test(url)) {
       set.add(url);
     }
   }
@@ -415,17 +416,41 @@ class DefaultExtension extends MProvider {
     const first = await this.document(url, this.base + '/');
     const media = new Set(this.extractMedia(first.body));
 
-    // The AnimeFire player can expose its media URL in the episode HTML or
-    // inside a public iframe. We only follow publicly reachable player pages;
-    // no login, DRM or access-control bypass is attempted.
+    // AnimeFire may expose the playable source as a public Blogger video.g
+    // iframe instead of an .mp4/.m3u8 URL. Mangayomi can use that public
+    // player URL, so keep it as a video source rather than returning [].
+    const bloggerRe = /https?:\/\/(?:www\.)?blogger\.com\/video\.g\?[^\"'<>\s]+/gi;
+    let bloggerMatch;
+    while ((bloggerMatch = bloggerRe.exec(first.body)) !== null) {
+      const candidate = this.decodeUrl(bloggerMatch[0]);
+      if (/^https:\/\/www\.blogger\.com\/video\.g\?token=/i.test(candidate)) {
+        media.add(candidate);
+      }
+    }
+
     const frames = this.iframeUrls(first.doc);
 
     for (const frame of frames.slice(0, 8)) {
+      // A Blogger video.g iframe is itself the playable source. Do not force
+      // a second request to Blogger, which can otherwise hide the source.
+      if (/^https:\/\/www\.blogger\.com\/video\.g\?token=/i.test(frame)) {
+        media.add(frame);
+        continue;
+      }
+
       if (media.size >= 12) break;
 
       try {
         const nested = await this.document(frame, url);
         for (const mediaUrl of this.extractMedia(nested.body)) media.add(mediaUrl);
+
+        let nestedMatch;
+        while ((nestedMatch = bloggerRe.exec(nested.body)) !== null) {
+          const candidate = this.decodeUrl(nestedMatch[0]);
+          if (/^https:\/\/www\.blogger\.com\/video\.g\?token=/i.test(candidate)) {
+            media.add(candidate);
+          }
+        }
       } catch (error) {
         console.log('AnimeFire player: ' + error);
       }
@@ -439,7 +464,5 @@ class DefaultExtension extends MProvider {
   }
 }
 
-// Mangayomi JS runner compatibility: expose the provider with `var` so
-// the host can resolve the historical global identifier `extention`.
-var extention = new DefaultExtension();
-var extension = extention;
+// Mangayomi JS runner compatibility.
+const extention = new DefaultExtension(mangayomiSources[0]);
