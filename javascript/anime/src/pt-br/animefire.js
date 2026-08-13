@@ -357,9 +357,18 @@ class DefaultExtension extends MProvider {
     const url = this.decodeUrl(value);
     if (!/^https?:\/\//i.test(url)) return;
 
-    if (/\.(?:m3u8|m3u|mp4)(?:[?#]|$)/i.test(url) ||
-        /^https:\/\/www\.blogger\.com\/video\.g\?token=/i.test(url)) {
+    // Direct streams.
+    if (/\.(?:m3u8|m3u|mp4)(?:[?#]|$)/i.test(url)) {
       set.add(url);
+      return;
+    }
+
+    // AnimeFire commonly embeds the playable video in a third-party iframe.
+    // Keep Blogger/Blogspot player URLs as valid Mangayomi sources even when
+    // they do not end in a media-file extension.
+    if (/^https?:\/\/(?:www\.)?(?:blogger\.com|blogspot\.com)\/video\.g\?(?:[^#]*&)?token=/i.test(url)) {
+      set.add(url);
+      return;
     }
   }
 
@@ -370,7 +379,7 @@ class DefaultExtension extends MProvider {
     const patterns = [
       /https?:\\?\/\\?\/[^"'<>\\\s]+?\.(?:m3u8|m3u|mp4)(?:\?[^"'<>\\\s]*)?/gi,
       /(?:src|file|source|url|hls|playlist|video|stream|streamUrl|videoUrl|contentUrl)\s*[:=]\s*["']([^"']+)["']/gi,
-      /(?:data-src|data-file|data-video|data-url|data-hls|data-playlist)\s*=\s*["']([^"']+)["']/gi,
+      /(?:data-src|data-file|data-video|data-video-src|data-url|data-hls|data-playlist)\s*=\s*["']([^"']+)["']/gi,
       /<source[^>]+src\s*=\s*["']([^"']+)["']/gi,
       /<video[^>]+src\s*=\s*["']([^"']+)["']/gi,
     ];
@@ -382,6 +391,20 @@ class DefaultExtension extends MProvider {
       }
     }
 
+    // Raw HTML may contain an iframe URL with escaped quotes/slashes.
+    const iframePattern = /<iframe[^>]+(?:src|data-src)\s*=\s*["']([^"']+)["']/gi;
+    let iframeMatch;
+    while ((iframeMatch = iframePattern.exec(html)) !== null) {
+      this.addMedia(set, iframeMatch[1]);
+    }
+
+    // Also search the complete document for Blogger/Blogspot video.g URLs.
+    const playerPattern = /https?:\\?\/\\?\/(?:www\.)?(?:blogger\.com|blogspot\.com)\/video\.g\?[^"'<>\s\\]+/gi;
+    let playerMatch;
+    while ((playerMatch = playerPattern.exec(html)) !== null) {
+      this.addMedia(set, playerMatch[0]);
+    }
+
     return Array.from(set);
   }
 
@@ -390,8 +413,8 @@ class DefaultExtension extends MProvider {
     const seen = new Set();
 
     const add = (value) => {
-      const url = this.abs(value);
-      if (!url || seen.has(url)) return;
+      const url = this.decodeUrl(value);
+      if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
       seen.add(url);
       frames.push(url);
     };
@@ -413,46 +436,53 @@ class DefaultExtension extends MProvider {
   }
 
   async getVideoList(url) {
-    const first = await this.document(url, this.base + '/');
-    const media = new Set(this.extractMedia(first.body));
+    const media = new Set();
+    let first;
 
-    // AnimeFire may expose the playable source as a public Blogger video.g
-    // iframe instead of an .mp4/.m3u8 URL. Mangayomi can use that public
-    // player URL, so keep it as a video source rather than returning [].
-    const bloggerRe = /https?:\/\/(?:www\.)?blogger\.com\/video\.g\?[^\"'<>\s]+/gi;
-    let bloggerMatch;
-    while ((bloggerMatch = bloggerRe.exec(first.body)) !== null) {
-      const candidate = this.decodeUrl(bloggerMatch[0]);
-      if (/^https:\/\/www\.blogger\.com\/video\.g\?token=/i.test(candidate)) {
-        media.add(candidate);
-      }
+    try {
+      first = await this.document(url, this.base + '/');
+    } catch (error) {
+      console.log('AnimeFire video page: ' + error);
+      return [];
     }
 
-    const frames = this.iframeUrls(first.doc);
+    // 1) Extract everything possible from the raw episode HTML first.
+    for (const mediaUrl of this.extractMedia(first.body)) media.add(mediaUrl);
 
-    for (const frame of frames.slice(0, 8)) {
-      // A Blogger video.g iframe is itself the playable source. Do not force
-      // a second request to Blogger, which can otherwise hide the source.
-      if (/^https:\/\/www\.blogger\.com\/video\.g\?token=/i.test(frame)) {
+    // 2) Read iframe/player attributes directly from the parsed document.
+    for (const frame of this.iframeUrls(first.doc)) {
+      if (/^https?:\/\/(?:www\.)?(?:blogger\.com|blogspot\.com)\/video\.g\?/i.test(frame)) {
         media.add(frame);
         continue;
       }
 
+      // Some AnimeFire pages use a wrapper player. Fetch the wrapper and look
+      // again for a real stream or a Blogger/Blogspot player.
       if (media.size >= 12) break;
-
       try {
         const nested = await this.document(frame, url);
         for (const mediaUrl of this.extractMedia(nested.body)) media.add(mediaUrl);
-
-        let nestedMatch;
-        while ((nestedMatch = bloggerRe.exec(nested.body)) !== null) {
-          const candidate = this.decodeUrl(nestedMatch[0]);
-          if (/^https:\/\/www\.blogger\.com\/video\.g\?token=/i.test(candidate)) {
-            media.add(candidate);
+        for (const nestedFrame of this.iframeUrls(nested.doc)) {
+          if (/^https?:\/\/(?:www\.)?(?:blogger\.com|blogspot\.com)\/video\.g\?/i.test(nestedFrame)) {
+            media.add(nestedFrame);
           }
         }
       } catch (error) {
         console.log('AnimeFire player: ' + error);
+      }
+    }
+
+    // 3) Last-resort raw regex. This catches escaped URLs that the HTML
+    // parser may not expose as iframe attributes.
+    const raw = String(first.body || '')
+      .replace(/\\u0026/gi, '&')
+      .replace(/\\\//g, '/');
+    const playerPattern = /https?:\/\/(?:www\.)?(?:blogger\.com|blogspot\.com)\/video\.g\?[^"'<>\s]+/gi;
+    let match;
+    while ((match = playerPattern.exec(raw)) !== null) {
+      const candidate = this.decodeUrl(match[0]);
+      if (/^https?:\/\/(?:www\.)?(?:blogger\.com|blogspot\.com)\/video\.g\?/i.test(candidate)) {
+        media.add(candidate);
       }
     }
 

@@ -1,1 +1,1 @@
-a59b4939aa53493227012fd96171f4d7c414b39e8404089bf410341f91ba5010  javascript/anime/src/pt-br/animefire.js
+fcab022d5ac375e162978f73924e8681ae3ab92a7beb1df17d0141d13e9b2ee4  /tmp/af3/javascript/anime/src/pt-br/animefire.js
