@@ -10,15 +10,15 @@
     "dateFormatLocale": "pt-br",
     "isNsfw": false,
     "hasCloudflare": false,
-    "sourceCodeUrl": "https://raw.githubusercontent.com/945gfff/AnimeFire-Mangayomi/main/javascript/anime/src/pt-br/animefire.js",
+    "sourceCodeUrl": "https://raw.githubusercontent.com/945gfff/AnimeFire-Mangayomi/refs/heads/principal/javascript/anime/src/pt-br/animefire.js",
     "apiUrl": "",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "isManga": false,
     "itemType": 1,
     "isFullData": true,
     "appMinVerReq": "0.8.3",
     "additionalParams": "",
     "sourceCodeLanguage": 1,
-    "notes": "Fonte reconstruída para Mangayomi 0.8.3. Mantém compatibilidade do provider e tenta resolver fontes diretas MP4/M3U8 através da página do episódio, endpoints públicos candidatos e players/iframes."
+    "notes": "Fonte AnimeFire para Mangayomi 0.8.3. Inclui pesquisa, detalhes, episódios e fontes públicas MP4/M3U8 ou player/iframe público quando exposto pela página do episódio."
   }
 ]
