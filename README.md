@@ -57,8 +57,3 @@ Cole:
 
 Depois procure por **AnimeFire** e instale/ative a fonte.
 
-
-
-## Compatibilidade
-
-Versão reconstruída para Mangayomi 0.8.3. O código evita campos privados de classe, optional chaining e nullish assignment para reduzir incompatibilidades do runtime JavaScript e expõe `extention` como variável global.

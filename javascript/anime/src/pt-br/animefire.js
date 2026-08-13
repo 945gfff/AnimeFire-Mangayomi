@@ -1,4 +1,4 @@
-var mangayomiSources = [
+const mangayomiSources = [
   {
     name: 'AnimeFire',
     langs: ['pt-br'],
@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.5',
+    version: '0.4.0',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -26,7 +26,7 @@ class DefaultExtension extends MProvider {
   }
 
   get base() {
-    return ((this.source && this.source.baseUrl) || 'https://animefire.io').replace(/\/$/, '');
+    return (this.source?.baseUrl || 'https://animefire.io').replace(/\/$/, '');
   }
 
   clean(value) {
@@ -100,7 +100,7 @@ class DefaultExtension extends MProvider {
   }
 
   cardImage(anchor) {
-    const image = anchor ? anchor.selectFirst('img') : null;
+    const image = anchor?.selectFirst('img');
     return this.imageFromElement(image);
   }
 
@@ -282,12 +282,12 @@ class DefaultExtension extends MProvider {
   async getDetail(url) {
     const { doc } = await this.document(url);
     const body = doc.selectFirst('body');
-    const bodyText = this.clean((body && body.text) || '');
+    const bodyText = this.clean(body?.text || '');
 
     let title = this.clean(
-      (doc.selectFirst('h1') ? doc.selectFirst('h1').text : '') ||
-      (doc.selectFirst('meta[property="og:title"]') ? doc.selectFirst('meta[property="og:title"]').attr('content') : '') ||
-      (doc.selectFirst('title') ? doc.selectFirst('title').text : '') ||
+      doc.selectFirst('h1')?.text ||
+      doc.selectFirst('meta[property="og:title"]')?.attr('content') ||
+      doc.selectFirst('title')?.text ||
       ''
     );
 
@@ -332,8 +332,8 @@ class DefaultExtension extends MProvider {
   decodeUrl(value) {
     if (!value) return '';
 
-    let url = String(value)
-      .trim()
+    var url = String(value).trim();
+    url = url
       .replace(/\\u0026/gi, '&')
       .replace(/\\u003A/gi, ':')
       .replace(/\\u002F/gi, '/')
@@ -343,110 +343,163 @@ class DefaultExtension extends MProvider {
       .replace(/&#x2F;/gi, '/')
       .replace(/&#47;/gi, '/');
 
-    try {
-      url = decodeURIComponent(url);
-    } catch (_) {
-      // Keep the original value if it is not URI-encoded.
-    }
-
-    if (url.startsWith('//')) url = 'https:' + url;
+    try { url = decodeURIComponent(url); } catch (_) {}
+    if (url.indexOf('//') === 0) url = 'https:' + url;
     return url;
   }
 
-  addMedia(set, value) {
-    const url = this.decodeUrl(value);
+  addCandidate(set, value) {
+    var url = this.decodeUrl(value);
     if (!/^https?:\/\//i.test(url)) return;
 
-    if (/\.(?:m3u8|m3u|mp4)(?:[?#]|$)/i.test(url)) {
-      set.add(url);
-      return;
-    }
-
-    if (/^https?:\/\/www\.blogger\.com\/video\.g\?token=/i.test(url)) {
-      set.add(url);
-    }
+    // Keep direct files and HLS manifests. Mangayomi can use the returned
+    // originalUrl for its normal playback/download pipeline.
+    if (/\.(?:m3u8|m3u|mp4)(?:[?#]|$)/i.test(url)) set.add(url);
   }
 
   extractMedia(text) {
-    const set = new Set();
-    const html = String(text || '');
-
-    const patterns = [
-      /https?:\\?\/\\?\/[^"'<>\\\s]+?\.(?:m3u8|m3u|mp4)(?:\?[^"'<>\\\s]*)?/gi,
-      /(?:src|file|source|url|hls|playlist|video|stream|streamUrl|videoUrl|contentUrl)\s*[:=]\s*["']([^"']+)["']/gi,
-      /(?:data-src|data-file|data-video|data-video-src|data-url|data-hls|data-playlist)\s*=\s*["']([^"']+)["']/gi,
+    var set = new Set();
+    var html = String(text || '');
+    var patterns = [
+      /https?:\\?\/\\?\/[^"'<>\\s]+?\.(?:m3u8|m3u|mp4)(?:\?[^"'<>\\s]*)?/gi,
+      /(?:src|file|source|url|hls|playlist|video|stream|streamUrl|videoUrl|contentUrl|sourceUrl)\s*[:=]\s*["']([^"']+)["']/gi,
+      /(?:data-src|data-file|data-video|data-url|data-hls|data-playlist|data-video-src|data-source)\s*=\s*["']([^"']+)["']/gi,
       /<source[^>]+src\s*=\s*["']([^"']+)["']/gi,
       /<video[^>]+src\s*=\s*["']([^"']+)["']/gi,
     ];
 
-    for (const pattern of patterns) {
-      let match;
+    for (var i = 0; i < patterns.length; i++) {
+      var pattern = patterns[i];
+      var match;
       while ((match = pattern.exec(html)) !== null) {
-        this.addMedia(set, match[1] || match[0]);
+        this.addCandidate(set, match[1] || match[0]);
       }
     }
 
     return Array.from(set);
   }
 
-  iframeUrls(doc) {
-    const frames = [];
-    const seen = new Set();
+  extractJsonSources(text) {
+    var set = new Set();
+    var html = String(text || '');
+    var decoded = html
+      .replace(/\\u0026/gi, '&')
+      .replace(/\\u003A/gi, ':')
+      .replace(/\\u002F/gi, '/')
+      .replace(/\\\//g, '/');
 
-    const add = (value) => {
-      const url = this.abs(value);
+    // Current/known AnimeFire integrations expose sourceUrls/sourceUrl in
+    // JSON data. We accept either a direct URL or an object containing url.
+    var patterns = [
+      /"sourceUrl"\s*:\s*"([^"]+)"/gi,
+      /"url"\s*:\s*"(https?:\\?\/\\?\/[^"\\]+)"/gi,
+      /"file"\s*:\s*"(https?:\\?\/\\?\/[^"\\]+)"/gi,
+      /"streamUrl"\s*:\s*"(https?:\\?\/\\?\/[^"\\]+)"/gi,
+    ];
+
+    for (var i = 0; i < patterns.length; i++) {
+      var m;
+      while ((m = patterns[i].exec(decoded)) !== null) this.addCandidate(set, m[1]);
+    }
+    return Array.from(set);
+  }
+
+  iframeUrls(doc) {
+    var frames = [];
+    var seen = new Set();
+    var add = function(value) {
+      if (!value) return;
+      var url = this.abs(value);
       if (!url || seen.has(url)) return;
       seen.add(url);
       frames.push(url);
-    };
+    }.bind(this);
 
-    for (const iframe of doc.select('iframe[src], iframe[data-src]')) {
-      add(iframe.attr('src') || iframe.attr('data-src'));
+    var iframes = doc.select('iframe[src], iframe[data-src]');
+    for (var i = 0; i < iframes.length; i++) {
+      add(iframes[i].attr('src') || iframes[i].attr('data-src'));
     }
 
-    for (const element of doc.select('[data-player], [data-embed], [data-iframe], a[href*="player"]')) {
-      add(element.attr('data-player') || element.attr('data-embed') || element.attr('data-iframe') || element.attr('href'));
+    var players = doc.select('[data-player], [data-embed], [data-iframe], [data-video-src], a[href*="player"], a[href*="embed"]');
+    for (var j = 0; j < players.length; j++) {
+      var e = players[j];
+      add(e.attr('data-player') || e.attr('data-embed') || e.attr('data-iframe') || e.attr('data-video-src') || e.attr('href'));
     }
-
     return frames;
   }
 
+  episodeApiCandidates(url) {
+    var list = [];
+    var match = String(url).match(/\/animes\/([^/?#]+)\/(\d+)\/?$/i);
+    if (!match) return list;
+
+    var slug = match[1];
+    var ep = match[2];
+    var base = this.base;
+
+    // Different AnimeFire integrations have used one of these public paths.
+    list.push(base + '/video/' + slug + '/' + ep);
+    list.push(base + '/api/video/' + slug + '/' + ep);
+    list.push(base + '/api/episode/' + slug + '/' + ep);
+    list.push(base + '/api/episodes/' + slug + '/' + ep);
+    return list;
+  }
+
   qualityFromUrl(url, index) {
-    const match = String(url).match(/(?:^|[._\/-])(2160|1440|1080|720|576|540|480|360)p?(?:[._?&\/-]|$)/i);
-    return match ? match[1] + 'p' : 'Fonte ' + (index + 1);
+    var match = String(url).match(/(?:^|[._\/-])(2160|1440|1080|720|576|540|480|360)p?(?:[._?&\/-]|$)/i);
+    if (match) return match[1] + 'p';
+    return 'Fonte ' + (index + 1);
   }
 
   async getVideoList(url) {
-    const first = await this.document(url, this.base + '/');
-    const media = new Set(this.extractMedia(first.body));
+    var media = new Set();
+    var visited = new Set();
+    var queue = [];
 
-    // AnimeFire may expose the player in a public iframe.
-    const frames = this.iframeUrls(first.doc);
-    for (const frame of frames.slice(0, 8)) {
-      if (media.size >= 12) break;
+    var addPage = function(pageUrl) {
+      if (!pageUrl || visited.has(pageUrl) || visited.size >= 15) return;
+      visited.add(pageUrl);
+      queue.push(pageUrl);
+    };
+
+    addPage(url);
+    var apiCandidates = this.episodeApiCandidates(url);
+    for (var i = 0; i < apiCandidates.length; i++) addPage(apiCandidates[i]);
+
+    while (queue.length && media.size < 20) {
+      var current = queue.shift();
       try {
-        const nested = await this.document(frame, url);
-        for (const mediaUrl of this.extractMedia(nested.body)) media.add(mediaUrl);
+        var response = await this.document(current, url);
+        var body = response.body;
+        var direct = this.extractMedia(body);
+        var jsonSources = this.extractJsonSources(body);
+        for (var d = 0; d < direct.length; d++) media.add(direct[d]);
+        for (var q = 0; q < jsonSources.length; q++) media.add(jsonSources[q]);
+
+        if (media.size < 20) {
+          var frames = this.iframeUrls(response.doc);
+          for (var f = 0; f < frames.length && f < 8; f++) addPage(frames[f]);
+        }
       } catch (error) {
-        console.log('AnimeFire player: ' + error);
+        console.log('AnimeFire video source: ' + error);
       }
     }
 
-    // Current AnimeFire implementations also expose a Blogger video.g token.
-    if (media.size === 0) {
-      const match = String(first.body || '').match(/https?:\/\/www\.blogger\.com\/video\.g\?token=[^\"'<>\s]+/i);
-      if (match && match[0]) media.add(this.decodeUrl(match[0]));
-    }
-
-    return Array.from(media).map((mediaUrl, index) => ({
-      url: mediaUrl,
-      originalUrl: mediaUrl,
-      quality: this.qualityFromUrl(mediaUrl, index),
-    }));
+    // If a direct media URL was found, return every distinct source so the
+    // Mangayomi player/download UI can choose from the available qualities.
+    var result = Array.from(media);
+    return result.map(function(mediaUrl, index) {
+      return {
+        url: mediaUrl,
+        originalUrl: mediaUrl,
+        quality: this.qualityFromUrl(mediaUrl, index),
+      };
+    }.bind(this));
   }
+
 }
 
-// Mangayomi JS runner compatibility: expose the provider with `var` so
-// the host can resolve the historical global identifier `extention`.
-var extention = new DefaultExtension();
-var extension = extention;
+// Mangayomi's JS runner expects an instantiated provider. Keep both spellings
+// because older 0.8.x builds used the historical `extention` identifier.
+const extension = new DefaultExtension();
+const extention = extension;
