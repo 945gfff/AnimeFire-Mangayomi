@@ -451,6 +451,11 @@ class DefaultExtension extends MProvider {
         url: mediaUrl,
         originalUrl: mediaUrl,
         quality: String(label || '').trim() || ('Fonte ' + videos.length),
+        headers: {
+          'Referer': this.base + '/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+          'Accept': '*/*',
+        },
       });
     };
 
@@ -472,6 +477,7 @@ class DefaultExtension extends MProvider {
         try { json = JSON.parse(body); } catch (_) {}
 
         if (json && Array.isArray(json.data)) {
+          console.log('AnimeFire video sources: ' + json.data.length);
           for (const item of json.data) {
             if (!item) continue;
             addVideo(item.src || item.url || item.file || item.video, item.label || item.resolution);
