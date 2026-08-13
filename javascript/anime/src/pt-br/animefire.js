@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.4',
+    version: '0.3.5',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -447,15 +447,14 @@ class DefaultExtension extends MProvider {
           !/googlevideo\.com/i.test(mediaUrl)) return;
       if (seen.has(mediaUrl)) return;
       seen.add(mediaUrl);
+      // Mangayomi's documented video contract is url/originalUrl/quality.
+      // Keep the returned object minimal so the download service can serialize
+      // it as a normal downloadable video. The source URLs are already signed
+      // by the provider when necessary.
       videos.push({
         url: mediaUrl,
         originalUrl: mediaUrl,
         quality: String(label || '').trim() || ('Fonte ' + videos.length),
-        headers: {
-          'Referer': this.base + '/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-          'Accept': '*/*',
-        },
       });
     };
 
@@ -522,6 +521,10 @@ class DefaultExtension extends MProvider {
 
     // Highest resolution first when labels contain a number.
     videos.sort((a, b) => {
+      const aMp4 = /\.mp4(?:[?#]|$)/i.test(a.url) ? 1 : 0;
+      const bMp4 = /\.mp4(?:[?#]|$)/i.test(b.url) ? 1 : 0;
+      if (aMp4 !== bMp4) return bMp4 - aMp4;
+
       const av = Number((String(a.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
       const bv = Number((String(b.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
       return bv - av;
