@@ -1,4 +1,4 @@
-const mangayomiSources = [
+var mangayomiSources = [
   {
     name: 'AnimeFire',
     langs: ['pt-br'],
@@ -7,7 +7,7 @@ const mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.4',
+    version: '0.3.5',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -15,14 +15,18 @@ const mangayomiSources = [
 ];
 
 class DefaultExtension extends MProvider {
-  #client;
+  constructor() {
+    super();
+    this._client = null;
+  }
 
   get client() {
-    return this.#client ??= new Client();
+    if (!this._client) this._client = new Client();
+    return this._client;
   }
 
   get base() {
-    return (this.source?.baseUrl || 'https://animefire.io').replace(/\/$/, '');
+    return ((this.source && this.source.baseUrl) || 'https://animefire.io').replace(/\/$/, '');
   }
 
   clean(value) {
@@ -96,7 +100,7 @@ class DefaultExtension extends MProvider {
   }
 
   cardImage(anchor) {
-    const image = anchor?.selectFirst('img');
+    const image = anchor ? anchor.selectFirst('img') : null;
     return this.imageFromElement(image);
   }
 
@@ -278,12 +282,12 @@ class DefaultExtension extends MProvider {
   async getDetail(url) {
     const { doc } = await this.document(url);
     const body = doc.selectFirst('body');
-    const bodyText = this.clean(body?.text || '');
+    const bodyText = this.clean((body && body.text) || '');
 
     let title = this.clean(
-      doc.selectFirst('h1')?.text ||
-      doc.selectFirst('meta[property="og:title"]')?.attr('content') ||
-      doc.selectFirst('title')?.text ||
+      (doc.selectFirst('h1') ? doc.selectFirst('h1').text : '') ||
+      (doc.selectFirst('meta[property="og:title"]') ? doc.selectFirst('meta[property="og:title"]').attr('content') : '') ||
+      (doc.selectFirst('title') ? doc.selectFirst('title').text : '') ||
       ''
     );
 
@@ -355,6 +359,11 @@ class DefaultExtension extends MProvider {
 
     if (/\.(?:m3u8|m3u|mp4)(?:[?#]|$)/i.test(url)) {
       set.add(url);
+      return;
+    }
+
+    if (/^https?:\/\/www\.blogger\.com\/video\.g\?token=/i.test(url)) {
+      set.add(url);
     }
   }
 
@@ -365,7 +374,7 @@ class DefaultExtension extends MProvider {
     const patterns = [
       /https?:\\?\/\\?\/[^"'<>\\\s]+?\.(?:m3u8|m3u|mp4)(?:\?[^"'<>\\\s]*)?/gi,
       /(?:src|file|source|url|hls|playlist|video|stream|streamUrl|videoUrl|contentUrl)\s*[:=]\s*["']([^"']+)["']/gi,
-      /(?:data-src|data-file|data-video|data-url|data-hls|data-playlist)\s*=\s*["']([^"']+)["']/gi,
+      /(?:data-src|data-file|data-video|data-video-src|data-url|data-hls|data-playlist)\s*=\s*["']([^"']+)["']/gi,
       /<source[^>]+src\s*=\s*["']([^"']+)["']/gi,
       /<video[^>]+src\s*=\s*["']([^"']+)["']/gi,
     ];
@@ -377,7 +386,7 @@ class DefaultExtension extends MProvider {
       }
     }
 
-    return [...set];
+    return Array.from(set);
   }
 
   iframeUrls(doc) {
@@ -408,102 +417,36 @@ class DefaultExtension extends MProvider {
   }
 
   async getVideoList(url) {
-    // AnimeFire exposes the episode sources through a small JSON endpoint.
-    // Older implementations only searched the HTML for .m3u8/.mp4 and
-    // therefore returned an empty video list when the player was moved out
-    // of the episode HTML.
-    const media = [];
-    const seen = new Set();
+    const first = await this.document(url, this.base + '/');
+    const media = new Set(this.extractMedia(first.body));
 
-    const add = (value, label) => {
-      const source = this.decodeUrl(value);
-      if (!source || !/^https?:\/\//i.test(source)) return;
-      if (seen.has(source)) return;
-
-      // The endpoint can return direct MP4/HLS URLs as well as GoogleVideo
-      // URLs with signed query parameters. Keep the full URL; stripping the
-      // query string would invalidate signed streams.
-      if (/(?:\.m3u8|\.m3u|\.mp4)(?:[?#]|$)/i.test(source) ||
-          /googlevideo\.com/i.test(source) ||
-          /\/(?:video|stream|file)\//i.test(source)) {
-        seen.add(source);
-        media.push({ url: source, quality: label || this.qualityFromUrl(source, media.length) });
-      }
-    };
-
-    const episodeMatch = String(url).match(/\/animes\/([^/?#]+)\/(\d+)\/?(?:[?#]|$)/i);
-
-    if (episodeMatch) {
-      const slug = episodeMatch[1];
-      const episode = episodeMatch[2];
-      const domains = [];
-
-      // .io is the current site; .plus is kept as a compatibility fallback
-      // because the historical AnimeFire API used that domain.
-      domains.push(this.base);
-      if (/animefire\.io$/i.test(this.base)) domains.push('https://animefire.plus');
-
-      for (const domain of domains) {
-        if (media.length >= 12) break;
-
-        try {
-          const apiUrl = domain + '/video/' + encodeURIComponent(slug) + '/' + episode;
-          const response = await this.client.get(apiUrl, {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-            'Referer': url,
-            'Accept': 'application/json,text/plain,*/*',
-          });
-
-          const body = String(response?.body || '');
-          let json = null;
-          try { json = JSON.parse(body); } catch (_) {}
-
-          if (json && Array.isArray(json.data)) {
-            for (const item of json.data) {
-              if (!item) continue;
-              add(item.src || item.url || item.file || item.source, item.label || item.resolution || item.quality);
-            }
-          } else {
-            // Some mirrors return the JSON embedded in a script tag.
-            const matches = body.match(/https?:\\?\/\\?\/[^\"'<>\\s]+/gi) || [];
-            for (const candidate of matches) add(candidate, null);
-          }
-        } catch (error) {
-          console.log('AnimeFire video API: ' + error);
-        }
-      }
-    }
-
-    // Fallback: inspect the episode page and public player frames.
-    if (media.length === 0) {
+    // AnimeFire may expose the player in a public iframe.
+    const frames = this.iframeUrls(first.doc);
+    for (const frame of frames.slice(0, 8)) {
+      if (media.size >= 12) break;
       try {
-        const first = await this.document(url, this.base + '/');
-        for (const source of this.extractMedia(first.body)) add(source, null);
-
-        const frames = this.iframeUrls(first.doc);
-        for (const frame of frames.slice(0, 8)) {
-          if (media.length >= 12) break;
-          try {
-            const nested = await this.document(frame, url);
-            for (const source of this.extractMedia(nested.body)) add(source, null);
-          } catch (error) {
-            console.log('AnimeFire player: ' + error);
-          }
-        }
+        const nested = await this.document(frame, url);
+        for (const mediaUrl of this.extractMedia(nested.body)) media.add(mediaUrl);
       } catch (error) {
-        console.log('AnimeFire episode: ' + error);
+        console.log('AnimeFire player: ' + error);
       }
     }
 
-    return media.map((item, index) => ({
-      url: item.url,
-      originalUrl: item.url,
-      quality: item.quality || this.qualityFromUrl(item.url, index),
+    // Current AnimeFire implementations also expose a Blogger video.g token.
+    if (media.size === 0) {
+      const match = String(first.body || '').match(/https?:\/\/www\.blogger\.com\/video\.g\?token=[^\"'<>\s]+/i);
+      if (match && match[0]) media.add(this.decodeUrl(match[0]));
+    }
+
+    return Array.from(media).map((mediaUrl, index) => ({
+      url: mediaUrl,
+      originalUrl: mediaUrl,
+      quality: this.qualityFromUrl(mediaUrl, index),
     }));
   }
 }
 
-// Mangayomi's JS runner expects an instantiated provider. Keep both spellings
-// because older 0.8.x builds used the historical `extention` identifier.
-const extension = new DefaultExtension();
-const extention = extension;
+// Mangayomi JS runner compatibility: expose the provider with `var` so
+// the host can resolve the historical global identifier `extention`.
+var extention = new DefaultExtension();
+var extension = extention;

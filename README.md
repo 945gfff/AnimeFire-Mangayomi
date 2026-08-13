@@ -38,9 +38,7 @@ O Mangayomi utiliza um índice JSON para descobrir fontes e carrega o código in
 - Capas
 - Episódios
 - Reprodução através de URLs diretas expostas pelo episódio/player
-- Consulta o endpoint `/video/{slug}/{episódio}` para obter as fontes reais
-- Suporte a MP4, HLS e URLs GoogleVideo assinadas
-- Fallback para HTML e iframes públicos
+- Procura de URLs `.m3u8`, `.m3u` e `.mp4`
 - Procura em iframes públicos
 
 ## Importante sobre download
@@ -59,3 +57,8 @@ Cole:
 
 Depois procure por **AnimeFire** e instale/ative a fonte.
 
+
+
+## Compatibilidade
+
+Versão reconstruída para Mangayomi 0.8.3. O código evita campos privados de classe, optional chaining e nullish assignment para reduzir incompatibilidades do runtime JavaScript e expõe `extention` como variável global.

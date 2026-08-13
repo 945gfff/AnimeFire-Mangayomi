@@ -1,3 +1,1 @@
-3cb44ee6c738c3f90e895a79e2b257d5f94b7eb83a98b2f8518ed8bfeb0d8b61  ./README.md
-d61e3f156ff9e04e7f48a70bc0abfe17d09c726d97df55193f996e4cbb45ee04  ./anime_index.json
-3e68ffbf2b358736f301781a73d2c4d8940fc97e6240a675b8e459a17ce9de83  ./javascript/anime/src/pt-br/animefire.js
+053ddcff121221b1ab22fa25e02e68ef05d678e6368db997c81fd831e1eaa13a  javascript/anime/src/pt-br/animefire.js
