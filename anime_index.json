@@ -12,13 +12,13 @@
     "hasCloudflare": false,
     "sourceCodeUrl": "https://raw.githubusercontent.com/945gfff/AnimeFire-Mangayomi/main/javascript/anime/src/pt-br/animefire.js",
     "apiUrl": "",
-    "version": "0.3.1",
+    "version": "0.3.3",
     "isManga": false,
     "itemType": 1,
     "isFullData": true,
-    "appMinVerReq": "0.6.0",
+    "appMinVerReq": "0.8.3",
     "additionalParams": "",
     "sourceCodeLanguage": 1,
-    "notes": "Fonte AnimeFire para Mangayomi. URLs de vídeo são usadas apenas quando disponibilizadas diretamente pela fonte/player público."
+    "notes": "Fonte AnimeFire reconstruída para Mangayomi 0.8.3, com runtime JavaScript legado e identificador global extention."
   }
 ]
