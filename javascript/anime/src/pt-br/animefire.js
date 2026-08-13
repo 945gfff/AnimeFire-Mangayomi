@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.3',
+    version: '0.3.4',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -406,6 +406,41 @@ class DefaultExtension extends MProvider {
     return frames;
   }
 
+  extractPlayerUrls(doc, html) {
+    const urls = [];
+    const seen = new Set();
+
+    const add = (value) => {
+      if (!value) return;
+      const url = this.decodeUrl(value).trim();
+      if (!/^https?:\\/\\/(?:www\\.)?blogger\\.com\\/video\\.g\\?token=/i.test(url)) return;
+      if (seen.has(url)) return;
+      seen.add(url);
+      urls.push(url);
+    };
+
+    // AnimeFire can expose a public Blogger video.g player. The player
+    // page may not expose the final MP4/M3U8 URL in its HTML.
+    for (const iframe of doc.select('iframe[src], iframe[data-src]')) {
+      add(iframe.attr('src') || iframe.attr('data-src'));
+    }
+
+    const source = String(html || '');
+    const marker = 'https://www.blogger.com/video.g?token=';
+    let start = 0;
+    while (true) {
+      const index = source.indexOf(marker, start);
+      if (index < 0) break;
+
+      let end = index + marker.length;
+      while (end < source.length && !/["'<>\\s]/.test(source[end])) end++;
+      add(source.substring(index, end));
+      start = end;
+    }
+
+    return urls;
+  }
+
   qualityFromUrl(url, index) {
     const match = String(url).match(/(?:^|[._\/-])(2160|1440|1080|720|576|540|480|360)p?(?:[._?&\/-]|$)/i);
     return match ? match[1] + 'p' : 'Fonte ' + (index + 1);
@@ -415,9 +450,10 @@ class DefaultExtension extends MProvider {
     const first = await this.document(url, this.base + '/');
     const media = new Set(this.extractMedia(first.body));
 
-    // The AnimeFire player can expose its media URL in the episode HTML or
-    // inside a public iframe. We only follow publicly reachable player pages;
-    // no login, DRM or access-control bypass is attempted.
+    // AnimeFire can expose a public Blogger video.g player. If the player
+    // does not reveal a direct MP4/M3U8 in its HTML, returning only direct
+    // media URLs would incorrectly produce "Video list is empty".
+    const playerUrls = this.extractPlayerUrls(first.doc, first.body);
     const frames = this.iframeUrls(first.doc);
 
     for (const frame of frames.slice(0, 8)) {
@@ -425,17 +461,35 @@ class DefaultExtension extends MProvider {
 
       try {
         const nested = await this.document(frame, url);
-        for (const mediaUrl of this.extractMedia(nested.body)) media.add(mediaUrl);
+        for (const mediaUrl of this.extractMedia(nested.body)) {
+          media.add(mediaUrl);
+        }
+        for (const playerUrl of this.extractPlayerUrls(nested.doc, nested.body)) {
+          if (playerUrls.indexOf(playerUrl) < 0) playerUrls.push(playerUrl);
+        }
       } catch (error) {
         console.log('AnimeFire player: ' + error);
       }
     }
 
-    return Array.from(media).map((mediaUrl, index) => ({
+    const result = Array.from(media).map((mediaUrl, index) => ({
       url: mediaUrl,
       originalUrl: mediaUrl,
       quality: this.qualityFromUrl(mediaUrl, index),
     }));
+
+    // Fallback: return the public player instead of an empty video list.
+    if (result.length === 0) {
+      for (let i = 0; i < playerUrls.length; i++) {
+        result.push({
+          url: playerUrls[i],
+          originalUrl: playerUrls[i],
+          quality: 'Blogger Player ' + (i + 1),
+        });
+      }
+    }
+
+    return result;
   }
 }
 
