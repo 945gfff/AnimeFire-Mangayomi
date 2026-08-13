@@ -12,13 +12,13 @@
     "hasCloudflare": false,
     "sourceCodeUrl": "https://raw.githubusercontent.com/945gfff/AnimeFire-Mangayomi/refs/heads/principal/javascript/anime/src/pt-br/animefire.js",
     "apiUrl": "",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "isManga": false,
     "itemType": 1,
     "isFullData": true,
     "appMinVerReq": "0.8.3",
     "additionalParams": "",
     "sourceCodeLanguage": 1,
-    "notes": "Fonte AnimeFire para Mangayomi 0.8.3. Inclui pesquisa, detalhes, episódios e fontes públicas MP4/M3U8 ou player/iframe público quando exposto pela página do episódio."
+    "notes": "Reconstrução para Mangayomi 0.8.3. Provider global com extension/extention, pesquisa, detalhes, episódios e extração de fontes MP4/M3U8 e player Blogger público."
   }
 ]
