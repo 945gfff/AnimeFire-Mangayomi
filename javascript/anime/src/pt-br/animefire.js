@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.6',
+    version: '0.3.5',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -478,32 +478,19 @@ class DefaultExtension extends MProvider {
       const mediaUrl = cleanVideoUrl(value);
       if (!/^https?:\/\//i.test(mediaUrl)) return;
       if (!/\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(mediaUrl) &&
-          !/googlevideo\.com|videodelivery\.net|streamtape|filemoon|vidmoly|blogger|blogspot/i.test(mediaUrl) &&
-          !/[?&](?:file|src|url|video|stream)=/i.test(mediaUrl)) return;
+          !/googlevideo\.com/i.test(mediaUrl)) return;
       if (seen.has(mediaUrl)) return;
       seen.add(mediaUrl);
       videos.push({
         url: mediaUrl,
         originalUrl: mediaUrl,
         quality: String(label || '').trim() || ('Fonte ' + videos.length),
+        headers: {
+          'Referer': this.base + '/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+          'Accept': '*/*',
+        },
       });
-    };
-
-    const collectJsonMedia = (value) => {
-      if (!value) return;
-      if (typeof value === 'string') {
-        const text = value.trim();
-        if (/^https?:\/\//i.test(text)) addVideo(text, 'Fonte');
-        else for (const mediaUrl of this.extractMedia(text)) addVideo(mediaUrl, 'Fonte');
-        return;
-      }
-      if (Array.isArray(value)) {
-        for (const item of value) collectJsonMedia(item);
-        return;
-      }
-      if (typeof value === 'object') {
-        for (const key of Object.keys(value)) collectJsonMedia(value[key]);
-      }
     };
 
     // 1) AnimeFire's video endpoint.
@@ -523,9 +510,22 @@ class DefaultExtension extends MProvider {
         let json = null;
         try { json = JSON.parse(body); } catch (_) {}
 
-        if (json) {
-          collectJsonMedia(json);
-        } else {
+        if (json && Array.isArray(json.data)) {
+          console.log('AnimeFire video sources: ' + json.data.length);
+          for (const item of json.data) {
+            if (!item) continue;
+            addVideo(item.src || item.url || item.file || item.video, item.label || item.resolution);
+          }
+        }
+
+        // Some versions return a JSON string nested in a field.
+        if (json && typeof json.data === 'string') {
+          const nested = this.extractMedia(json.data);
+          for (const mediaUrl of nested) addVideo(mediaUrl, 'Fonte');
+        }
+
+        // If the response is not JSON, still search it for media URLs.
+        if (!json) {
           for (const mediaUrl of this.extractMedia(body)) addVideo(mediaUrl, 'Fonte');
         }
       } catch (error) {
