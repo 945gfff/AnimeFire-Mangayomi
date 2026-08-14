@@ -446,8 +446,10 @@ class DefaultExtension extends MProvider {
   }
 
   async getVideoList(url) {
-    // Hybrid extractor: keep the endpoint that works on AnimeFire, then
-    // fall back to the episode/player HTML for sources exposed differently.
+    // IMPORTANT: keep the provider/global structure untouched. Only the
+    // video extractor is replaced. AnimeFire's public video endpoint returns
+    // JSON with `data: [{src, label}]`; the normal episode HTML often does not
+    // contain the actual media URL.
     const match = String(url || '').match(/\/animes\/([^/?#]+)\/(\d+)\/?(?:[?#].*)?$/i);
     if (!match) return [];
 
@@ -459,28 +461,30 @@ class DefaultExtension extends MProvider {
 
     const cleanVideoUrl = (value) => {
       if (!value) return '';
-      let v = String(value).trim()
+      let valueText = String(value).trim()
         .replace(/\\u0026/gi, '&')
         .replace(/\\u003A/gi, ':')
         .replace(/\\u002F/gi, '/')
         .replace(/\\\//g, '/')
         .replace(/&amp;/gi, '&')
         .replace(/&quot;/gi, '"');
-      try { v = decodeURIComponent(v); } catch (_) {}
-      if (v.startsWith('//')) v = 'https:' + v;
-      return v;
+
+      try { valueText = decodeURIComponent(valueText); } catch (_) {}
+      if (valueText.startsWith('//')) valueText = 'https:' + valueText;
+      return valueText;
     };
 
     const addVideo = (value, label) => {
-      const v = cleanVideoUrl(value);
-      if (!/^https?:\/\//i.test(v)) return;
-      const direct = /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(v) || /googlevideo\.com/i.test(v);
-      if (!direct || seen.has(v)) return;
-      seen.add(v);
+      const mediaUrl = cleanVideoUrl(value);
+      if (!/^https?:\/\//i.test(mediaUrl)) return;
+      if (!/\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(mediaUrl) &&
+          !/googlevideo\.com/i.test(mediaUrl)) return;
+      if (seen.has(mediaUrl)) return;
+      seen.add(mediaUrl);
       videos.push({
-        url: v,
-        originalUrl: v,
-        quality: String(label || '').trim() || ('Fonte ' + (videos.length + 1)),
+        url: mediaUrl,
+        originalUrl: mediaUrl,
+        quality: String(label || '').trim() || ('Fonte ' + videos.length),
         headers: {
           'Referer': this.base + '/',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
@@ -489,10 +493,9 @@ class DefaultExtension extends MProvider {
       });
     };
 
-    // 1) Primary AnimeFire endpoint. This is the path used by the known-good
-    // build and should remain first so existing working anime are unchanged.
+    // 1) AnimeFire's video endpoint.
     for (const host of hosts) {
-      if (videos.length) break;
+      if (videos.length > 0) break;
       const endpoint = host + '/video/' + encodeURIComponent(slug) + '/' + episode;
       try {
         const response = await this.client.get(endpoint, {
@@ -500,6 +503,7 @@ class DefaultExtension extends MProvider {
           'Referer': host + '/animes/' + slug + '/' + episode,
           'Accept': 'application/json,text/plain,*/*',
         });
+
         const body = String((response && response.body) || '').trim();
         if (!body) continue;
 
@@ -507,53 +511,42 @@ class DefaultExtension extends MProvider {
         try { json = JSON.parse(body); } catch (_) {}
 
         if (json && Array.isArray(json.data)) {
+          console.log('AnimeFire video sources: ' + json.data.length);
           for (const item of json.data) {
             if (!item) continue;
-            addVideo(item.src || item.url || item.file || item.video,
-              item.label || item.resolution || item.quality);
+            addVideo(item.src || item.url || item.file || item.video, item.label || item.resolution);
           }
         }
+
+        // Some versions return a JSON string nested in a field.
         if (json && typeof json.data === 'string') {
-          for (const u of this.extractMedia(json.data)) addVideo(u, 'Fonte');
+          const nested = this.extractMedia(json.data);
+          for (const mediaUrl of nested) addVideo(mediaUrl, 'Fonte');
         }
+
+        // If the response is not JSON, still search it for media URLs.
         if (!json) {
-          for (const u of this.extractMedia(body)) addVideo(u, 'Fonte');
+          for (const mediaUrl of this.extractMedia(body)) addVideo(mediaUrl, 'Fonte');
         }
       } catch (error) {
         console.log('AnimeFire video endpoint: ' + error);
       }
     }
 
-    // 2) Episode/player fallback for anime whose endpoint response differs.
-    if (!videos.length) {
+    // 2) Fallback: inspect the episode page and its public player frames.
+    if (videos.length === 0) {
       try {
-        const page = await this.document(url, this.base + '/');
-        const body = String(page.body || '');
+        const first = await this.document(url, this.base + '/');
+        for (const mediaUrl of this.extractMedia(first.body)) addVideo(mediaUrl, 'Fonte');
 
-        for (const u of this.extractMedia(body)) addVideo(u, 'Fonte');
-
-        // Blogger/Blogspot player pages may expose a nested media URL.
-        const frames = this.iframeUrls(page.doc);
+        const frames = this.iframeUrls(first.doc);
         for (const frame of frames.slice(0, 8)) {
           if (videos.length >= 12) break;
           try {
             const nested = await this.document(frame, url);
-            const nestedBody = String(nested.body || '');
-            for (const u of this.extractMedia(nestedBody)) addVideo(u, 'Fonte');
-
-            // Look for common VIDEO_CONFIG stream/play_url fields without
-            // returning the player page itself to Mangayomi.
-            const configPatterns = [
-              /"play_url"\s*:\s*"([^"]+)"/gi,
-              /"playUrl"\s*:\s*"([^"]+)"/gi,
-              /"url"\s*:\s*"((?:https?:)?\\?\/\\?\/[^"]+)"/gi
-            ];
-            for (const re of configPatterns) {
-              let m;
-              while ((m = re.exec(nestedBody)) !== null) addVideo(m[1], 'Fonte');
-            }
+            for (const mediaUrl of this.extractMedia(nested.body)) addVideo(mediaUrl, 'Fonte');
           } catch (error) {
-            console.log('AnimeFire player fallback: ' + error);
+            console.log('AnimeFire player: ' + error);
           }
         }
       } catch (error) {
@@ -561,6 +554,7 @@ class DefaultExtension extends MProvider {
       }
     }
 
+    // Highest resolution first when labels contain a number.
     videos.sort((a, b) => {
       const av = Number((String(a.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
       const bv = Number((String(b.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
