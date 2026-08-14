@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.7',
+    version: '0.3.5',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -446,10 +446,18 @@ class DefaultExtension extends MProvider {
   }
 
   async getVideoList(url) {
+    // Hybrid extractor: keep the endpoint that works on AnimeFire, then
+    // fall back to the episode/player HTML for sources exposed differently.
+    const match = String(url || '').match(/\/animes\/([^/?#]+)\/(\d+)\/?(?:[?#].*)?$/i);
+    if (!match) return [];
+
+    const slug = match[1];
+    const episode = match[2];
+    const hosts = ['https://animefire.plus', 'https://animefire.io'];
     const videos = [];
     const seen = new Set();
 
-    const normalize = (value) => {
+    const cleanVideoUrl = (value) => {
       if (!value) return '';
       let v = String(value).trim()
         .replace(/\\u0026/gi, '&')
@@ -458,85 +466,110 @@ class DefaultExtension extends MProvider {
         .replace(/\\\//g, '/')
         .replace(/&amp;/gi, '&')
         .replace(/&quot;/gi, '"');
+      try { v = decodeURIComponent(v); } catch (_) {}
       if (v.startsWith('//')) v = 'https:' + v;
       return v;
     };
 
-    const add = (value, quality) => {
-      const v = normalize(value);
-      if (!/^https?:\/\//i.test(v) || seen.has(v)) return;
-      const isDirect = /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(v) || /googlevideo\.com/i.test(v);
-      const isBlogger = /https?:\/\/www\.(?:blogger|blogspot)\.com\/video\.g\?token=/i.test(v);
-      if (!isDirect && !isBlogger) return;
+    const addVideo = (value, label) => {
+      const v = cleanVideoUrl(value);
+      if (!/^https?:\/\//i.test(v)) return;
+      const direct = /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(v) || /googlevideo\.com/i.test(v);
+      if (!direct || seen.has(v)) return;
       seen.add(v);
       videos.push({
         url: v,
         originalUrl: v,
-        quality: quality || (isBlogger ? 'AnimeFire Player' : 'Fonte ' + (videos.length + 1)),
+        quality: String(label || '').trim() || ('Fonte ' + (videos.length + 1)),
         headers: {
-          'Referer': 'https://animefire.io/',
+          'Referer': this.base + '/',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+          'Accept': '*/*',
         },
       });
     };
 
-    const extractFromHtml = (html) => {
-      const text = String(html || '');
-      // AnimeFire's current player commonly exposes a Blogger iframe.
-      const blogger = text.match(/https?:\\?\/\\?\/www\.(?:blogger|blogspot)\.com\/video\.g\?token=[A-Za-z0-9_-]+/i);
-      if (blogger) add(blogger[0], 'AnimeFire Player');
+    // 1) Primary AnimeFire endpoint. This is the path used by the known-good
+    // build and should remain first so existing working anime are unchanged.
+    for (const host of hosts) {
+      if (videos.length) break;
+      const endpoint = host + '/video/' + encodeURIComponent(slug) + '/' + episode;
+      try {
+        const response = await this.client.get(endpoint, {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+          'Referer': host + '/animes/' + slug + '/' + episode,
+          'Accept': 'application/json,text/plain,*/*',
+        });
+        const body = String((response && response.body) || '').trim();
+        if (!body) continue;
 
-      const patterns = [
-        /https?:\\?\/\\?\/[^"'<>\s]+?\.m3u8(?:\?[^"'<>\s]*)?/gi,
-        /https?:\\?\/\\?\/[^"'<>\s]+?\.mp4(?:\?[^"'<>\s]*)?/gi,
-      ];
-      for (const re of patterns) {
-        let m;
-        while ((m = re.exec(text)) !== null) add(m[0], 'Fonte');
+        let json = null;
+        try { json = JSON.parse(body); } catch (_) {}
+
+        if (json && Array.isArray(json.data)) {
+          for (const item of json.data) {
+            if (!item) continue;
+            addVideo(item.src || item.url || item.file || item.video,
+              item.label || item.resolution || item.quality);
+          }
+        }
+        if (json && typeof json.data === 'string') {
+          for (const u of this.extractMedia(json.data)) addVideo(u, 'Fonte');
+        }
+        if (!json) {
+          for (const u of this.extractMedia(body)) addVideo(u, 'Fonte');
+        }
+      } catch (error) {
+        console.log('AnimeFire video endpoint: ' + error);
       }
-    };
-
-    try {
-      const page = await this.document(url, this.base + '/');
-      const doc = page.doc;
-
-      // Same extraction order used by the current AnimeFire scraper:
-      // data-video-src -> video/source -> Blogger iframe -> data-* -> HTML.
-      for (const el of doc.select('[data-video-src]')) {
-        add(el.attr('data-video-src'), el.attr('data-quality') || 'Fonte');
-      }
-
-      const source = doc.selectFirst('video source[src]');
-      if (source) add(source.attr('src'), 'Fonte');
-
-      const video = doc.selectFirst('video[src]');
-      if (video) add(video.attr('src'), 'Fonte');
-
-      for (const iframe of doc.select('iframe[src]')) {
-        const src = normalize(iframe.attr('src'));
-        if (/blogger\.com|blogspot\.com/i.test(src)) add(src, 'AnimeFire Player');
-      }
-
-      const selectors = [
-        ['[data-video]', 'data-video'],
-        ['[data-src]', 'data-src'],
-        ['[data-url]', 'data-url'],
-        ['[data-player]', 'data-player'],
-      ];
-      for (const pair of selectors) {
-        const el = doc.selectFirst(pair[0]);
-        if (el) add(el.attr(pair[1]), 'Fonte');
-      }
-
-      extractFromHtml(page.body);
-    } catch (error) {
-      console.log('AnimeFire video extraction: ' + error);
     }
 
-    // Do not return the page itself, and do not call a guessed /video endpoint.
-    // Mangayomi expects actual media URLs or the public Blogger video player URL.
+    // 2) Episode/player fallback for anime whose endpoint response differs.
+    if (!videos.length) {
+      try {
+        const page = await this.document(url, this.base + '/');
+        const body = String(page.body || '');
+
+        for (const u of this.extractMedia(body)) addVideo(u, 'Fonte');
+
+        // Blogger/Blogspot player pages may expose a nested media URL.
+        const frames = this.iframeUrls(page.doc);
+        for (const frame of frames.slice(0, 8)) {
+          if (videos.length >= 12) break;
+          try {
+            const nested = await this.document(frame, url);
+            const nestedBody = String(nested.body || '');
+            for (const u of this.extractMedia(nestedBody)) addVideo(u, 'Fonte');
+
+            // Look for common VIDEO_CONFIG stream/play_url fields without
+            // returning the player page itself to Mangayomi.
+            const configPatterns = [
+              /"play_url"\s*:\s*"([^"]+)"/gi,
+              /"playUrl"\s*:\s*"([^"]+)"/gi,
+              /"url"\s*:\s*"((?:https?:)?\\?\/\\?\/[^"]+)"/gi
+            ];
+            for (const re of configPatterns) {
+              let m;
+              while ((m = re.exec(nestedBody)) !== null) addVideo(m[1], 'Fonte');
+            }
+          } catch (error) {
+            console.log('AnimeFire player fallback: ' + error);
+          }
+        }
+      } catch (error) {
+        console.log('AnimeFire episode fallback: ' + error);
+      }
+    }
+
+    videos.sort((a, b) => {
+      const av = Number((String(a.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
+      const bv = Number((String(b.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
+      return bv - av;
+    });
+
     return videos;
-  }}
+  }
+}
 
 // Mangayomi JS runner compatibility: expose the provider with `var` so
 // the host can resolve the historical global identifier `extention`.
