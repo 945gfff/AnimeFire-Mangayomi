@@ -446,14 +446,18 @@ class DefaultExtension extends MProvider {
   }
 
   async getVideoList(url) {
-    // AnimeFire can expose a real media URL OR a public player iframe.
-    // The latter is important for episodes whose source is hosted by Blogger/Blogspot.
+    // Robust extractor for AnimeFire 0.8.3:
+    //  - direct MP4/M3U8 URLs
+    //  - AnimeFire /video endpoint JSON
+    //  - Blogger video.g players, resolving VIDEO_CONFIG.streams[].play_url
+    //  - nested player pages, without returning the player page itself as a
+    //    playable source (which can cause Mangayomi to stay on "processing").
     const videos = [];
     const seen = new Set();
 
     const cleanUrl = (value) => {
       if (!value) return '';
-      let valueText = String(value).trim()
+      let v = String(value).trim()
         .replace(/\\u0026/gi, '&')
         .replace(/\\u003A/gi, ':')
         .replace(/\\u002F/gi, '/')
@@ -462,105 +466,156 @@ class DefaultExtension extends MProvider {
         .replace(/&quot;/gi, '"')
         .replace(/&#x2F;/gi, '/')
         .replace(/&#47;/gi, '/');
-
-      try { valueText = decodeURIComponent(valueText); } catch (_) {}
-      if (valueText.startsWith('//')) valueText = 'https:' + valueText;
-      return valueText;
+      try { v = decodeURIComponent(v); } catch (_) {}
+      if (v.startsWith('//')) v = 'https:' + v;
+      return v;
     };
 
     const isMedia = (value) =>
-      /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(value) ||
-      /googlevideo\.com/i.test(value);
+      /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(String(value || '')) ||
+      /googlevideo\.com\/videoplayback/i.test(String(value || ''));
 
-    const isPlayer = (value) =>
-      /^https?:\/\/(?:www\.)?blogger\.com\/video\.g(?:\?|$)/i.test(value) ||
-      /^https?:\/\/[^/]*blogspot\.com\//i.test(value) ||
-      /(?:\/embed\/|\/player\/|video\.g\?)/i.test(value);
+    const isBlogger = (value) =>
+      /^https?:\/\/(?:www\.)?blogger\.com\/video\.g\?token=/i.test(String(value || ''));
 
-    const addVideo = (value, label, player = false) => {
+    const addVideo = (value, label, referer) => {
       const mediaUrl = cleanUrl(value);
-      if (!/^https?:\/\//i.test(mediaUrl)) return;
-
-      if (!player && !isMedia(mediaUrl)) return;
-      if (player && !isPlayer(mediaUrl)) return;
+      if (!/^https?:\/\//i.test(mediaUrl) || !isMedia(mediaUrl)) return;
       if (seen.has(mediaUrl)) return;
-
       seen.add(mediaUrl);
       videos.push({
         url: mediaUrl,
         originalUrl: mediaUrl,
-        quality: String(label || '').trim() || (player ? 'Player' : ('Fonte ' + (videos.length + 1))),
+        quality: String(label || '').trim() || ('Fonte ' + (videos.length + 1)),
         headers: {
-          'Referer': this.base + '/',
+          'Referer': referer || this.base + '/',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
           'Accept': '*/*',
         },
       });
     };
 
-    const addFromHtml = (html, doc) => {
-      const body = String(html || '');
+    const quality = (item, fallback) => {
+      const text = String(item && (item.label || item.quality || item.resolution || item.format_id || '') || '');
+      const m = text.match(/(2160|1440|1080|720|576|540|480|360)p?/i);
+      return m ? m[1] + 'p' : (text || fallback);
+    };
 
-      // Real media first.
+    // Blogger's public player stores the actual stream URLs in:
+    // var VIDEO_CONFIG = { ..., "streams": [{"play_url": "...", "format_id": 18}] };
+    // This is the key difference between "player opens" and a real playable URL.
+    const extractBloggerConfig = (html, referer) => {
+      const body = String(html || '');
+      const patterns = [
+        /var\s+VIDEO_CONFIG\s*=\s*(\{[\s\S]*?\})\s*;?/i,
+        /VIDEO_CONFIG\s*=\s*(\{[\s\S]*?\})\s*;?/i,
+      ];
+
+      for (const pattern of patterns) {
+        const match = body.match(pattern);
+        if (!match) continue;
+
+        let jsonText = match[1];
+        try {
+          // Blogger uses JSON with escaped unicode sequences.
+          jsonText = jsonText
+            .replace(/\\u0026/gi, '&')
+            .replace(/\\u003A/gi, ':')
+            .replace(/\\u002F/gi, '/')
+            .replace(/\\\//g, '/');
+          const config = JSON.parse(jsonText);
+          const streams = Array.isArray(config.streams) ? config.streams : [];
+          for (let i = 0; i < streams.length; i++) {
+            const stream = streams[i] || {};
+            const playUrl = stream.play_url || stream.url || stream.src;
+            addVideo(playUrl, quality(stream, 'Blogger ' + (i + 1)), referer || 'https://www.blogger.com/');
+          }
+          if (streams.length > 0) return true;
+        } catch (error) {
+          console.log('AnimeFire Blogger VIDEO_CONFIG: ' + error);
+        }
+      }
+      return false;
+    };
+
+    const addFromHtml = (html, doc, referer) => {
+      const body = String(html || '');
+      let before = videos.length;
+
+      // 1) Resolve Blogger before generic extraction.
+      extractBloggerConfig(body, referer);
+
+      // 2) Direct media URLs in the HTML.
       for (const mediaUrl of this.extractMedia(body)) {
-        addVideo(mediaUrl, 'Fonte');
+        addVideo(mediaUrl, 'Fonte', referer);
       }
 
-      // AnimeFire commonly uses a Blogger/Blogspot iframe. In this case
-      // returning the public player URL is preferable to returning [].
+      // 3) Inspect iframes/data attributes. Never return a player page as a
+      // playable source; resolve it first.
+      const candidates = [];
       if (doc) {
         for (const iframe of doc.select('iframe[src], iframe[data-src]')) {
-          const frame = cleanUrl(iframe.attr('src') || iframe.attr('data-src'));
-          if (isMedia(frame)) {
-            addVideo(frame, 'Fonte');
-          } else if (isPlayer(frame)) {
-            addVideo(frame, 'Player', true);
-          }
+          candidates.push(iframe.attr('src') || iframe.attr('data-src'));
         }
-
         for (const element of doc.select('[data-video-src], [data-video], [data-src], [data-url], [data-player], [data-embed], [data-iframe]')) {
-          const candidate =
-            element.attr('data-video-src') ||
-            element.attr('data-video') ||
-            element.attr('data-src') ||
-            element.attr('data-url') ||
-            element.attr('data-player') ||
-            element.attr('data-embed') ||
-            element.attr('data-iframe');
-
-          if (isMedia(cleanUrl(candidate))) {
-            addVideo(candidate, 'Fonte');
-          } else if (isPlayer(cleanUrl(candidate))) {
-            addVideo(candidate, 'Player', true);
-          }
+          candidates.push(
+            element.attr('data-video-src') || element.attr('data-video') ||
+            element.attr('data-src') || element.attr('data-url') ||
+            element.attr('data-player') || element.attr('data-embed') ||
+            element.attr('data-iframe')
+          );
         }
       }
 
-      // The player URL is sometimes embedded in a script rather than an iframe node.
+      // Player URLs can also be embedded in scripts.
       const playerPatterns = [
         /https?:\\?\/\\?\/(?:www\.)?blogger\.com\/video\.g\?token=[^"'<>\\\s]+/gi,
         /https?:\\?\/\\?\/[^"'<>\\\s]*blogspot\.com\/[^"'<>\\\s]+/gi,
       ];
-
       for (const pattern of playerPatterns) {
-        let match;
-        while ((match = pattern.exec(body)) !== null) {
-          const candidate = cleanUrl(match[0]);
-          if (isPlayer(candidate)) addVideo(candidate, 'Player', true);
+        let m;
+        while ((m = pattern.exec(body)) !== null) candidates.push(m[0]);
+      }
+
+      return { added: videos.length > before, players: candidates.map(cleanUrl).filter(u => /^https?:\/\//i.test(u)) };
+    };
+
+    const inspectUrl = async (target, referer, depth) => {
+      if (!target || depth > 2) return;
+      const cleanTarget = cleanUrl(target);
+      if (!/^https?:\/\//i.test(cleanTarget)) return;
+
+      try {
+        const response = await this.client.get(cleanTarget, {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+          'Referer': referer || this.base + '/',
+          'Accept': 'text/html,application/xhtml+xml,application/json,text/plain,*/*',
+        });
+        const body = String((response && response.body) || '');
+        if (!body) return;
+
+        // Blogger video.g is the important path for the episodes that used to
+        // stay loading. Resolve streams[] directly.
+        const bloggerResolved = isBlogger(cleanTarget) && extractBloggerConfig(body, cleanTarget);
+
+        const result = addFromHtml(body, response && response.doc ? response.doc : null, cleanTarget);
+        if (result.players && depth < 2) {
+          const unique = Array.from(new Set(result.players));
+          for (const p of unique.slice(0, 8)) {
+            if (isBlogger(p) && p === cleanTarget) continue;
+            await inspectUrl(p, cleanTarget, depth + 1);
+          }
         }
+      } catch (error) {
+        console.log('AnimeFire inspect video: ' + error);
       }
     };
 
-    // 1) Inspect the actual episode page first. This is the most reliable
-    // path for episodes that do not expose the legacy /video/ endpoint.
-    try {
-      const first = await this.document(url, this.base + '/');
-      addFromHtml(first.body, first.doc);
-    } catch (error) {
-      console.log('AnimeFire episode page: ' + error);
-    }
+    // 1) Episode page.
+    await inspectUrl(url, this.base + '/', 0);
 
-    // 2) Try AnimeFire's legacy video endpoint as an additional source.
+    // 2) Legacy /video endpoint. Some AnimeFire pages expose the player only
+    // through this endpoint; recursively inspect nested URLs in JSON/HTML.
     const match = String(url || '').match(/\/animes\/([^/?#]+)\/(\d+)\/?(?:[?#].*)?$/i);
     if (match) {
       const slug = match[1];
@@ -575,29 +630,41 @@ class DefaultExtension extends MProvider {
             'Referer': host + '/animes/' + slug + '/' + episode,
             'Accept': 'application/json,text/plain,text/html,*/*',
           });
-
           const body = String((response && response.body) || '').trim();
           if (!body) continue;
 
           let json = null;
           try { json = JSON.parse(body); } catch (_) {}
 
-          if (json && Array.isArray(json.data)) {
-            for (const item of json.data) {
-              if (!item) continue;
-              const candidate = item.src || item.url || item.file || item.video || item.embed;
-              if (isMedia(cleanUrl(candidate))) {
-                addVideo(candidate, item.label || item.resolution || 'Fonte');
-              } else if (isPlayer(cleanUrl(candidate))) {
-                addVideo(candidate, item.label || 'Player', true);
-              }
+          const queue = [];
+          const walk = (value, label) => {
+            if (value == null) return;
+            if (typeof value === 'string') {
+              const u = cleanUrl(value);
+              if (isMedia(u)) addVideo(u, label || 'Fonte', endpoint);
+              else if (isBlogger(u) || /blogspot\.com/i.test(u)) queue.push(u);
+              return;
             }
+            if (Array.isArray(value)) {
+              for (const item of value) walk(item, label);
+              return;
+            }
+            if (typeof value === 'object') {
+              const itemLabel = value.label || value.quality || value.resolution || value.format_id || label;
+              for (const key of Object.keys(value)) walk(value[key], itemLabel);
+            }
+          };
+
+          if (json) walk(json, 'Fonte');
+          else {
+            // First resolve VIDEO_CONFIG if the endpoint itself is a player.
+            extractBloggerConfig(body, endpoint);
+            const r = addFromHtml(body, null, endpoint);
+            for (const p of r.players) queue.push(p);
           }
 
-          if (json && typeof json.data === 'string') {
-            addFromHtml(json.data, null);
-          } else if (!json) {
-            addFromHtml(body, null);
+          for (const p of Array.from(new Set(queue)).slice(0, 8)) {
+            await inspectUrl(p, endpoint, 1);
           }
         } catch (error) {
           console.log('AnimeFire video endpoint: ' + error);
@@ -605,35 +672,15 @@ class DefaultExtension extends MProvider {
       }
     }
 
-    // 3) If the episode page gave a player iframe, inspect it for a real
-    // media URL as a bonus. Keep the player itself too, because some players
-    // are not statically exposing the stream.
-    const playerUrls = videos
-      .filter(v => isPlayer(v.url))
-      .map(v => v.url)
-      .slice(0, 8);
-
-    for (const playerUrl of playerUrls) {
-      try {
-        const nested = await this.document(playerUrl, url);
-        addFromHtml(nested.body, nested.doc);
-      } catch (error) {
-        console.log('AnimeFire nested player: ' + error);
-      }
-    }
-
+    // Highest resolution first.
     videos.sort((a, b) => {
       const av = Number((String(a.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
       const bv = Number((String(b.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
-      if (av !== bv) return bv - av;
-      if (a.quality === 'Player' && b.quality !== 'Player') return 1;
-      if (b.quality === 'Player' && a.quality !== 'Player') return -1;
-      return 0;
+      return bv - av;
     });
 
     return videos;
   }
-
 }
 
 // Mangayomi JS runner compatibility: expose the provider with `var` so
