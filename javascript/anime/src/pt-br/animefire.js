@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.4',
+    version: '0.3.5',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -112,7 +112,13 @@ class DefaultExtension extends MProvider {
       const link = this.animeLink(anchor.attr('href'));
       if (!link || seen.has(link)) continue;
 
-      const name = this.clean(anchor.text);
+      let name = this.clean(anchor.text);
+      if (!name) name = this.clean(anchor.attr('title') || anchor.attr('aria-label'));
+      if (!name) {
+        const image = anchor.selectFirst('img');
+        if (image) name = this.clean(image.attr('alt') || image.attr('title'));
+      }
+
       if (!name || /episódio\s+\d+/i.test(name)) continue;
 
       seen.add(link);
@@ -176,15 +182,43 @@ class DefaultExtension extends MProvider {
     return this.getLatestUpdates(page);
   }
 
+  slugifySearch(value) {
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/&/g, ' e ')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
   async search(query, page) {
     const currentPage = Math.max(1, Number(page || 1));
     const keyword = String(query || '').trim();
     if (!keyword) return { list: [], hasNextPage: false };
 
-    const url = this.base + '/pesquisar/' + encodeURIComponent(keyword) +
-      (currentPage > 1 ? '?page=' + currentPage : '');
+    const slug = this.slugifySearch(keyword);
+    const encoded = encodeURIComponent(keyword);
+    const candidates = [];
 
-    return this.listPage(url, currentPage);
+    if (slug) candidates.push(this.base + '/pesquisar/' + slug);
+    if (encoded && encoded !== slug) candidates.push(this.base + '/pesquisar/' + encoded);
+
+    // Fallback for titles where the search route is indexed without separators.
+    const compact = slug.replace(/-/g, '');
+    if (compact && compact !== slug) candidates.push(this.base + '/pesquisar/' + compact);
+
+    for (const baseUrl of candidates) {
+      const url = currentPage > 1 ? baseUrl + '?page=' + currentPage : baseUrl;
+      try {
+        const result = await this.listPage(url, currentPage);
+        if (result.list.length > 0) return result;
+      } catch (error) {
+        console.log('AnimeFire search candidate: ' + error);
+      }
+    }
+
+    return { list: [], hasNextPage: false };
   }
 
   getFilterList() {
