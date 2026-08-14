@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.6',
+    version: '0.3.7',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -445,6 +445,43 @@ class DefaultExtension extends MProvider {
     return match ? match[1] + 'p' : 'Fonte ' + (index + 1);
   }
 
+  extractBloggerStreams(html, baseUrl, addFn) {
+    const text = String(html || '');
+    const re = /var\s+VIDEO_CONFIG\s*=\s*(\{[\s\S]*?\})\s*;?/i;
+    const match = text.match(re);
+    if (!match) return 0;
+
+    let raw = match[1];
+    // Blogger's config is commonly JSON with escaped unicode/slashes.
+    raw = raw.replace(/\\\//g, '/');
+    raw = raw.replace(/\\u0026/gi, '&');
+    raw = raw.replace(/\\u003a/gi, ':');
+    raw = raw.replace(/\\u002f/gi, '/');
+
+    let config = null;
+    try {
+      config = JSON.parse(raw);
+    } catch (_) {
+      try {
+        config = JSON.parse(raw.replace(/\\x([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16))));
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    const streams = config && Array.isArray(config.streams) ? config.streams : [];
+    let count = 0;
+    for (const stream of streams) {
+      if (!stream) continue;
+      const playUrl = stream.play_url || stream.playUrl || stream.url || stream.src;
+      if (!playUrl) continue;
+      const formatId = stream.format_id || stream.formatId || stream.quality || '';
+      addFn(playUrl, formatId ? String(formatId) : 'Blogger', baseUrl);
+      count++;
+    }
+    return count;
+  }
+
   async getVideoList(url) {
     const match = String(url || '').match(/\/animes\/([^/?#]+)\/(\d+)\/?(?:[?#].*)?$/i);
     if (!match) return [];
@@ -519,6 +556,11 @@ class DefaultExtension extends MProvider {
     const collectHtml = (html, baseUrl, label) => {
       const text = String(html || '');
 
+      // Blogger's video.g player exposes the actual playable streams in
+      // VIDEO_CONFIG.streams[].play_url. Prefer those real media URLs over
+      // returning the player page itself.
+      this.extractBloggerStreams(text, baseUrl, add);
+
       // Direct media URLs, including escaped URLs.
       const directPatterns = [
         /https?:\\?\/\\?\/[^"'<>\\\s]+?\.(?:m3u8|m3u|mp4)(?:[?#][^"'<>\\\s]*)?/gi,
@@ -541,7 +583,10 @@ class DefaultExtension extends MProvider {
       ];
       for (const pattern of playerPatterns) {
         let m;
-        while ((m = pattern.exec(text)) !== null) add(m[1] || m[0], 'Player', baseUrl);
+        while ((m = pattern.exec(text)) !== null) {
+          const player = absolute(m[1] || m[0], baseUrl);
+          if (player && !pages.includes(player)) pages.push(player);
+        }
       }
 
       // Collect any iframe URL so it can be inspected for a real media URL.
@@ -550,7 +595,7 @@ class DefaultExtension extends MProvider {
       while ((fm = frameRe.exec(text)) !== null) {
         const frame = absolute(fm[1], baseUrl);
         if (frame && !pages.includes(frame)) pages.push(frame);
-        add(frame, 'Player', baseUrl);
+        // The iframe itself is not a playable media URL; inspect it instead.
       }
     };
 
