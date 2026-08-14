@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.5',
+    version: '0.3.6',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -477,8 +477,11 @@ class DefaultExtension extends MProvider {
     const addVideo = (value, label) => {
       const mediaUrl = cleanVideoUrl(value);
       if (!/^https?:\/\//i.test(mediaUrl)) return;
-      if (!/\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(mediaUrl) &&
-          !/googlevideo\.com/i.test(mediaUrl)) return;
+      const isDirectMedia = /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(mediaUrl);
+      const isGoogleVideo = /googlevideo\.com/i.test(mediaUrl);
+      const isBloggerPlayer = /https?:\/\/(?:www\.)?blogger\.com\/video\.g\?token=/i.test(mediaUrl);
+      const isBlogspotPlayer = /https?:\/\/(?:www\.)?blogspot\.com\//i.test(mediaUrl);
+      if (!isDirectMedia && !isGoogleVideo && !isBloggerPlayer && !isBlogspotPlayer) return;
       if (seen.has(mediaUrl)) return;
       seen.add(mediaUrl);
       videos.push({
@@ -492,6 +495,46 @@ class DefaultExtension extends MProvider {
         },
       });
     };
+
+    // 0) The AnimeFire page can expose the actual player as a public Blogger iframe.
+    // Return that player URL as a source too; some episodes (especially dubbed
+    // releases) do not expose a direct mp4/m3u8 URL in the page.
+    try {
+      const episodePage = await this.document(url, this.base + '/');
+      const html = episodePage.body;
+
+      const playerCandidates = [];
+      const addPlayerCandidate = (value) => {
+        if (!value) return;
+        let v = String(value)
+          .replace(/\\u0026/gi, '&')
+          .replace(/\\u002F/gi, '/')
+          .replace(/\\\\\\//g, '/')
+          .replace(/&amp;/gi, '&')
+          .replace(/&quot;/gi, '"')
+          .trim();
+        if (v.startsWith('//')) v = 'https:' + v;
+        if (/^https?:\\/\\/(?:www\\.)?blogger\\.com\\/video\\.g\\?token=/i.test(v) ||
+            /^https?:\\/\\/(?:www\\.)?blogspot\\.com\\//i.test(v)) {
+          if (!playerCandidates.includes(v)) playerCandidates.push(v);
+        }
+      };
+
+      for (const iframe of episodePage.doc.select('iframe[src], iframe[data-src]')) {
+        addPlayerCandidate(iframe.attr('src') || iframe.attr('data-src'));
+      }
+
+      const bloggerRe = /https?:\\/\\/(?:www\\.)?blogger\\.com\\/video\\.g\\?token=[^"'<>\\s&]+(?:&[^"'<>\\s]*)?/gi;
+      let m;
+      while ((m = bloggerRe.exec(html)) !== null) addPlayerCandidate(m[0]);
+
+      const blogspotRe = /https?:\\/\\/(?:www\\.)?blogspot\\.com\\/[^"'<>\\s]+/gi;
+      while ((m = blogspotRe.exec(html)) !== null) addPlayerCandidate(m[0]);
+
+      for (const player of playerCandidates) addVideo(player, 'AnimeFire Player');
+    } catch (error) {
+      console.log('AnimeFire player source: ' + error);
+    }
 
     // 1) AnimeFire's video endpoint.
     for (const host of hosts) {
