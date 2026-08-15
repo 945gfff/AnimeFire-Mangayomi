@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.7',
+    version: '0.3.6',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -454,7 +454,7 @@ class DefaultExtension extends MProvider {
     const videos = [];
     const seen = new Set();
 
-    const decode = (value) => {
+    const clean = (value) => {
       if (value == null) return '';
       let v = String(value).trim()
         .replace(/\\u0026/gi, '&')
@@ -465,7 +465,7 @@ class DefaultExtension extends MProvider {
         .replace(/&quot;/gi, '"')
         .replace(/&#x2F;/gi, '/')
         .replace(/&#47;/gi, '/');
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < 3; i++) {
         try {
           const d = decodeURIComponent(v);
           if (d === v) break;
@@ -476,15 +476,15 @@ class DefaultExtension extends MProvider {
       return v;
     };
 
-    const isMedia = (v) => {
-      const u = decode(v);
-      return /^https?:\/\//i.test(u) &&
-        (/\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(u) ||
-         /googlevideo\.com|videoplayback|\.m3u8/i.test(u));
+    const isMedia = (value) => {
+      const u = clean(value);
+      if (!/^https?:\/\//i.test(u)) return false;
+      return /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(u) ||
+        /(?:googlevideo\.com|videoplayback|\.m3u8(?:[?#]|$))/i.test(u);
     };
 
     const add = (value, label) => {
-      const u = decode(value);
+      const u = clean(value);
       if (!isMedia(u) || seen.has(u)) return;
       seen.add(u);
       videos.push({
@@ -497,7 +497,6 @@ class DefaultExtension extends MProvider {
     const walk = (value, label) => {
       if (value == null) return;
       if (typeof value === 'string') {
-        // A JSON field may contain an entire escaped object/array.
         const t = value.trim();
         if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
           try { walk(JSON.parse(t), label); } catch (_) {}
@@ -510,18 +509,13 @@ class DefaultExtension extends MProvider {
         return;
       }
       if (typeof value === 'object') {
-        const nextLabel =
-          value.label || value.quality || value.resolution || value.height ||
-          value.name || value.title || label || '';
-        const keys = [
-          'src','url','file','video','videoUrl','stream','streamUrl',
-          'hls','hlsUrl','m3u8','mp4','contentUrl','download','downloadUrl'
+        const nextLabel = value.label || value.quality || value.resolution || value.height || value.name || value.title || label || '';
+        const mediaKeys = [
+          'src','url','file','video','videoUrl','stream','streamUrl','hls','hlsUrl',
+          'm3u8','mp4','contentUrl','download','downloadUrl','source'
         ];
-        for (const key of keys) {
-          if (value[key] != null) {
-            if (typeof value[key] === 'string') add(value[key], nextLabel);
-            else walk(value[key], nextLabel);
-          }
+        for (const key of mediaKeys) {
+          if (value[key] != null) walk(value[key], nextLabel);
         }
         for (const key of Object.keys(value)) {
           const child = value[key];
@@ -531,19 +525,15 @@ class DefaultExtension extends MProvider {
       }
     };
 
-    const parseResponse = (body) => {
+    const parseBody = (body) => {
       const text = String(body || '');
       if (!text) return;
+      try { walk(JSON.parse(text), ''); } catch (_) {}
 
-      try {
-        walk(JSON.parse(text), '');
-      } catch (_) {}
-
-      // Catch media URLs embedded in HTML/JS/escaped JSON.
       const patterns = [
-        /https?:\\?\/\\?\/[^"'<>\\\s]+?\.(?:m3u8|m3u|mp4)(?:\?[^"'<>\\\s]*)?/gi,
-        /(?:src|file|source|url|hls|playlist|video|stream|streamUrl|videoUrl|contentUrl)\s*[:=]\s*["']([^"']+)["']/gi,
-        /(?:data-src|data-file|data-video|data-url|data-hls|data-playlist)\s*=\s*["']([^"']+)["']/gi,
+        /https?:\\?\/\\?\/[^"'<>\\\s]+?(?:\.m3u8|\.m3u|\.mp4)(?:\?[^"'<>\\\s]*)?/gi,
+        /(?:src|file|source|url|hls|playlist|video|stream|streamUrl|videoUrl|contentUrl|downloadUrl)\s*[:=]\s*["']([^"']+)["']/gi,
+        /(?:data-src|data-file|data-video|data-url|data-hls|data-playlist|data-source)\s*=\s*["']([^"']+)["']/gi,
         /<source[^>]+src\s*=\s*["']([^"']+)["']/gi,
         /<video[^>]+src\s*=\s*["']([^"']+)["']/gi
       ];
@@ -562,53 +552,50 @@ class DefaultExtension extends MProvider {
         });
         return String((response && response.body) || '');
       } catch (error) {
-        console.log('AnimeFire source request: ' + error);
+        console.log('AnimeFire video request: ' + error);
         return '';
       }
     };
 
-    // The current AnimeFire episode URLs use the short slug (without
-    // "-todos-os-episodios"). Try the current host first, then the legacy
-    // host as a fallback. Do not return headers/objects: Mangayomi 0.8.3's
-    // download isolate expects a plain serializable video object.
-    const endpointHosts = [this.base, 'https://animefire.io', 'https://animefire.plus'];
-    const endpointPaths = [
+    // Try both the current and legacy host. The endpoint has existed in
+    // multiple response shapes, so parse the whole JSON recursively instead
+    // of assuming only {data:[{src,label}]}.
+    const hosts = [this.base, 'https://animefire.io', 'https://animefire.plus'];
+    const paths = [
       '/video/' + slug + '/' + episode,
+      '/video/' + encodeURIComponent(slug) + '/' + episode,
       '/api/video/' + slug + '/' + episode,
       '/api/videos/' + slug + '/' + episode
     ];
 
-    for (const host of endpointHosts) {
+    for (const host of hosts) {
       if (videos.length > 0) break;
-      for (const path of endpointPaths) {
+      for (const path of paths) {
         const endpoint = host.replace(/\/$/, '') + path;
-        const body = await request(
-          endpoint,
-          this.base + '/animes/' + slug + '/' + episode,
-          'application/json,text/plain,text/html,*/*'
-        );
-        if (body) parseResponse(body);
+        const body = await request(endpoint, url, 'application/json,text/plain,text/html,*/*');
+        if (body) parseBody(body);
         if (videos.length > 0) break;
       }
     }
 
-    // Inspect the episode itself. This handles titles whose player is not
-    // represented by the same JSON shape as other AnimeFire entries.
+    // Episode page fallback. This is deliberately independent from the API:
+    // some AnimeFire entries expose a player/iframe instead of API media.
     if (videos.length === 0) {
       const body = await request(url, this.base + '/', 'text/html,application/xhtml+xml,*/*');
-      parseResponse(body);
+      parseBody(body);
 
-      // Extract every iframe/player URL, then inspect the first few player
-      // documents for the actual media URL.
-      const frameSet = new Set();
+      const frames = [];
+      const frameSeen = new Set();
       const addFrame = (value) => {
-        const u = decode(value);
-        if (/^https?:\/\//i.test(u)) frameSet.add(u);
+        const u = clean(value);
+        if (!/^https?:\/\//i.test(u) || frameSeen.has(u)) return;
+        frameSeen.add(u);
+        frames.push(u);
       };
 
       const framePatterns = [
         /<iframe[^>]+(?:src|data-src)\s*=\s*["']([^"']+)["']/gi,
-        /(?:data-player|data-embed|data-iframe)\s*=\s*["']([^"']+)["']/gi,
+        /(?:data-player|data-embed|data-iframe|data-source)\s*=\s*["']([^"']+)["']/gi,
         /["'](https?:\/\/[^"']*(?:player|embed|blogger)[^"']*)["']/gi
       ];
       for (const pattern of framePatterns) {
@@ -616,14 +603,13 @@ class DefaultExtension extends MProvider {
         while ((m = pattern.exec(body)) !== null) addFrame(m[1]);
       }
 
-      for (const frame of Array.from(frameSet).slice(0, 10)) {
+      for (const frame of frames.slice(0, 12)) {
         if (videos.length >= 12) break;
         const nested = await request(frame, url, 'text/html,application/xhtml+xml,*/*');
-        if (nested) parseResponse(nested);
+        if (nested) parseBody(nested);
       }
     }
 
-    // Prefer explicit resolutions, but keep every distinct source.
     videos.sort((a, b) => {
       const av = Number((String(a.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
       const bv = Number((String(b.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
@@ -631,8 +617,7 @@ class DefaultExtension extends MProvider {
     });
 
     return videos;
-  }
-}
+  }}
 
 // Mangayomi JS runner compatibility: expose the provider with `var` so
 // the host can resolve the historical global identifier `extention`.
