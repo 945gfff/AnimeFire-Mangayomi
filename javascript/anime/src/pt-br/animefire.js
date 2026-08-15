@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.5',
+    version: '0.3.7',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -446,115 +446,184 @@ class DefaultExtension extends MProvider {
   }
 
   async getVideoList(url) {
-    // IMPORTANT: keep the provider/global structure untouched. Only the
-    // video extractor is replaced. AnimeFire's public video endpoint returns
-    // JSON with `data: [{src, label}]`; the normal episode HTML often does not
-    // contain the actual media URL.
     const match = String(url || '').match(/\/animes\/([^/?#]+)\/(\d+)\/?(?:[?#].*)?$/i);
     if (!match) return [];
 
     const slug = match[1];
     const episode = match[2];
-    const hosts = ['https://animefire.plus', 'https://animefire.io'];
     const videos = [];
     const seen = new Set();
 
-    const cleanVideoUrl = (value) => {
-      if (!value) return '';
-      let valueText = String(value).trim()
+    const decode = (value) => {
+      if (value == null) return '';
+      let v = String(value).trim()
         .replace(/\\u0026/gi, '&')
         .replace(/\\u003A/gi, ':')
         .replace(/\\u002F/gi, '/')
         .replace(/\\\//g, '/')
         .replace(/&amp;/gi, '&')
-        .replace(/&quot;/gi, '"');
-
-      try { valueText = decodeURIComponent(valueText); } catch (_) {}
-      if (valueText.startsWith('//')) valueText = 'https:' + valueText;
-      return valueText;
+        .replace(/&quot;/gi, '"')
+        .replace(/&#x2F;/gi, '/')
+        .replace(/&#47;/gi, '/');
+      for (let i = 0; i < 2; i++) {
+        try {
+          const d = decodeURIComponent(v);
+          if (d === v) break;
+          v = d;
+        } catch (_) { break; }
+      }
+      if (v.startsWith('//')) v = 'https:' + v;
+      return v;
     };
 
-    const addVideo = (value, label) => {
-      const mediaUrl = cleanVideoUrl(value);
-      if (!/^https?:\/\//i.test(mediaUrl)) return;
-      if (!/\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(mediaUrl) &&
-          !/googlevideo\.com/i.test(mediaUrl)) return;
-      if (seen.has(mediaUrl)) return;
-      seen.add(mediaUrl);
+    const isMedia = (v) => {
+      const u = decode(v);
+      return /^https?:\/\//i.test(u) &&
+        (/\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(u) ||
+         /googlevideo\.com|videoplayback|\.m3u8/i.test(u));
+    };
+
+    const add = (value, label) => {
+      const u = decode(value);
+      if (!isMedia(u) || seen.has(u)) return;
+      seen.add(u);
       videos.push({
-        url: mediaUrl,
-        originalUrl: mediaUrl,
-        quality: String(label || '').trim() || ('Fonte ' + videos.length),
-        headers: {
-          'Referer': this.base + '/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-          'Accept': '*/*',
-        },
+        url: u,
+        originalUrl: u,
+        quality: String(label || '').trim() || ('Fonte ' + (videos.length + 1))
       });
     };
 
-    // 1) AnimeFire's video endpoint.
-    for (const host of hosts) {
-      if (videos.length > 0) break;
-      const endpoint = host + '/video/' + encodeURIComponent(slug) + '/' + episode;
+    const walk = (value, label) => {
+      if (value == null) return;
+      if (typeof value === 'string') {
+        // A JSON field may contain an entire escaped object/array.
+        const t = value.trim();
+        if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
+          try { walk(JSON.parse(t), label); } catch (_) {}
+        }
+        if (isMedia(t)) add(t, label);
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item, label);
+        return;
+      }
+      if (typeof value === 'object') {
+        const nextLabel =
+          value.label || value.quality || value.resolution || value.height ||
+          value.name || value.title || label || '';
+        const keys = [
+          'src','url','file','video','videoUrl','stream','streamUrl',
+          'hls','hlsUrl','m3u8','mp4','contentUrl','download','downloadUrl'
+        ];
+        for (const key of keys) {
+          if (value[key] != null) {
+            if (typeof value[key] === 'string') add(value[key], nextLabel);
+            else walk(value[key], nextLabel);
+          }
+        }
+        for (const key of Object.keys(value)) {
+          const child = value[key];
+          if (child && typeof child === 'object') walk(child, nextLabel);
+          else if (typeof child === 'string' && isMedia(child)) add(child, nextLabel);
+        }
+      }
+    };
+
+    const parseResponse = (body) => {
+      const text = String(body || '');
+      if (!text) return;
+
       try {
-        const response = await this.client.get(endpoint, {
+        walk(JSON.parse(text), '');
+      } catch (_) {}
+
+      // Catch media URLs embedded in HTML/JS/escaped JSON.
+      const patterns = [
+        /https?:\\?\/\\?\/[^"'<>\\\s]+?\.(?:m3u8|m3u|mp4)(?:\?[^"'<>\\\s]*)?/gi,
+        /(?:src|file|source|url|hls|playlist|video|stream|streamUrl|videoUrl|contentUrl)\s*[:=]\s*["']([^"']+)["']/gi,
+        /(?:data-src|data-file|data-video|data-url|data-hls|data-playlist)\s*=\s*["']([^"']+)["']/gi,
+        /<source[^>]+src\s*=\s*["']([^"']+)["']/gi,
+        /<video[^>]+src\s*=\s*["']([^"']+)["']/gi
+      ];
+      for (const pattern of patterns) {
+        let m;
+        while ((m = pattern.exec(text)) !== null) add(m[1] || m[0], 'Fonte');
+      }
+    };
+
+    const request = async (target, referer, accept) => {
+      try {
+        const response = await this.client.get(target, {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-          'Referer': host + '/animes/' + slug + '/' + episode,
-          'Accept': 'application/json,text/plain,*/*',
+          'Referer': referer,
+          'Accept': accept || '*/*'
         });
-
-        const body = String((response && response.body) || '').trim();
-        if (!body) continue;
-
-        let json = null;
-        try { json = JSON.parse(body); } catch (_) {}
-
-        if (json && Array.isArray(json.data)) {
-          console.log('AnimeFire video sources: ' + json.data.length);
-          for (const item of json.data) {
-            if (!item) continue;
-            addVideo(item.src || item.url || item.file || item.video, item.label || item.resolution);
-          }
-        }
-
-        // Some versions return a JSON string nested in a field.
-        if (json && typeof json.data === 'string') {
-          const nested = this.extractMedia(json.data);
-          for (const mediaUrl of nested) addVideo(mediaUrl, 'Fonte');
-        }
-
-        // If the response is not JSON, still search it for media URLs.
-        if (!json) {
-          for (const mediaUrl of this.extractMedia(body)) addVideo(mediaUrl, 'Fonte');
-        }
+        return String((response && response.body) || '');
       } catch (error) {
-        console.log('AnimeFire video endpoint: ' + error);
+        console.log('AnimeFire source request: ' + error);
+        return '';
+      }
+    };
+
+    // The current AnimeFire episode URLs use the short slug (without
+    // "-todos-os-episodios"). Try the current host first, then the legacy
+    // host as a fallback. Do not return headers/objects: Mangayomi 0.8.3's
+    // download isolate expects a plain serializable video object.
+    const endpointHosts = [this.base, 'https://animefire.io', 'https://animefire.plus'];
+    const endpointPaths = [
+      '/video/' + slug + '/' + episode,
+      '/api/video/' + slug + '/' + episode,
+      '/api/videos/' + slug + '/' + episode
+    ];
+
+    for (const host of endpointHosts) {
+      if (videos.length > 0) break;
+      for (const path of endpointPaths) {
+        const endpoint = host.replace(/\/$/, '') + path;
+        const body = await request(
+          endpoint,
+          this.base + '/animes/' + slug + '/' + episode,
+          'application/json,text/plain,text/html,*/*'
+        );
+        if (body) parseResponse(body);
+        if (videos.length > 0) break;
       }
     }
 
-    // 2) Fallback: inspect the episode page and its public player frames.
+    // Inspect the episode itself. This handles titles whose player is not
+    // represented by the same JSON shape as other AnimeFire entries.
     if (videos.length === 0) {
-      try {
-        const first = await this.document(url, this.base + '/');
-        for (const mediaUrl of this.extractMedia(first.body)) addVideo(mediaUrl, 'Fonte');
+      const body = await request(url, this.base + '/', 'text/html,application/xhtml+xml,*/*');
+      parseResponse(body);
 
-        const frames = this.iframeUrls(first.doc);
-        for (const frame of frames.slice(0, 8)) {
-          if (videos.length >= 12) break;
-          try {
-            const nested = await this.document(frame, url);
-            for (const mediaUrl of this.extractMedia(nested.body)) addVideo(mediaUrl, 'Fonte');
-          } catch (error) {
-            console.log('AnimeFire player: ' + error);
-          }
-        }
-      } catch (error) {
-        console.log('AnimeFire episode fallback: ' + error);
+      // Extract every iframe/player URL, then inspect the first few player
+      // documents for the actual media URL.
+      const frameSet = new Set();
+      const addFrame = (value) => {
+        const u = decode(value);
+        if (/^https?:\/\//i.test(u)) frameSet.add(u);
+      };
+
+      const framePatterns = [
+        /<iframe[^>]+(?:src|data-src)\s*=\s*["']([^"']+)["']/gi,
+        /(?:data-player|data-embed|data-iframe)\s*=\s*["']([^"']+)["']/gi,
+        /["'](https?:\/\/[^"']*(?:player|embed|blogger)[^"']*)["']/gi
+      ];
+      for (const pattern of framePatterns) {
+        let m;
+        while ((m = pattern.exec(body)) !== null) addFrame(m[1]);
+      }
+
+      for (const frame of Array.from(frameSet).slice(0, 10)) {
+        if (videos.length >= 12) break;
+        const nested = await request(frame, url, 'text/html,application/xhtml+xml,*/*');
+        if (nested) parseResponse(nested);
       }
     }
 
-    // Highest resolution first when labels contain a number.
+    // Prefer explicit resolutions, but keep every distinct source.
     videos.sort((a, b) => {
       const av = Number((String(a.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
       const bv = Number((String(b.quality).match(/(2160|1440|1080|720|576|540|480|360)/) || ['', 0])[1]);
