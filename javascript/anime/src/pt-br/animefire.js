@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.7',
+    version: '0.3.8',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -191,10 +191,27 @@ class DefaultExtension extends MProvider {
       .replace(/^-+|-+$/g, '');
   }
 
-  async search(query, page) {
+  async search(query, page, filters) {
     const currentPage = Math.max(1, Number(page || 1));
     const keyword = String(query || '').trim();
-    if (!keyword) return { list: [], hasNextPage: false };
+    const f = this.readFilters(filters);
+
+    // When filters are selected without a keyword, use AnimeFire's Top Anime
+    // pages. The current site exposes the letter as part of the path and the
+    // other filters as query parameters.
+    if (!keyword && (f.letter || f.year || f.score || f.rating)) {
+      let baseUrl = this.base + '/top-animes';
+      if (f.letter) baseUrl += '/' + encodeURIComponent(f.letter.toLowerCase());
+
+      const params = [];
+      if (f.year) params.push('ano=' + encodeURIComponent(f.year));
+      if (f.score) params.push('score=' + encodeURIComponent(f.score));
+      if (f.rating) params.push('classificacao=' + encodeURIComponent(f.rating));
+
+      const pagePath = currentPage > 1 ? '/' + currentPage : '';
+      const url = baseUrl + pagePath + (params.length ? '?' + params.join('&') : '');
+      return this.listPage(url, currentPage);
+    }
 
     const slug = this.slugifySearch(keyword);
     const encoded = encodeURIComponent(keyword);
@@ -220,7 +237,52 @@ class DefaultExtension extends MProvider {
   }
 
   getFilterList() {
-    return [];
+    const letters = ['','A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z'];
+    const years = ['','2026','2025','2024','2023','2022','2021','2020','2019','2018','2017','2016','2015','2014','2013','2012','2011','2010','2009','2008','2007','2006','2005','2004','2003','2002','2001','2000'];
+    const scores = ['','9','8','7','6','5','4','3','2','1'];
+    const ratings = [
+      ['', 'Todas'],
+      ['L', 'L - Livre'],
+      ['A10', 'A10'],
+      ['A14', 'A14'],
+      ['A16', 'A16'],
+      ['A18', 'A18'],
+    ];
+    const options = (values) => values.map((value) => ({
+      type_name: 'SelectOption',
+      name: value || 'Todos',
+      value,
+    }));
+
+    return [
+      { type_name: 'SelectFilter', type: 'letter', name: 'Letra', state: 0, values: options(letters) },
+      { type_name: 'SelectFilter', type: 'year', name: 'Ano', state: 0, values: options(years) },
+      { type_name: 'SelectFilter', type: 'score', name: 'Nota mínima', state: 0, values: options(scores) },
+      { type_name: 'SelectFilter', type: 'rating', name: 'Classificação', state: 0, values: ratings.map(([value, name]) => ({ type_name: 'SelectOption', name, value })) },
+    ];
+  }
+
+  readFilters(filters) {
+    const out = { letter: '', year: '', score: '', rating: '' };
+    if (!Array.isArray(filters)) return out;
+
+    for (const group of filters) {
+      if (!group) continue;
+      const type = String(group.type || group.name || group.type_name || '').toLowerCase();
+      let state = group.state;
+      if (Array.isArray(state)) {
+        const checked = state.find((x) => x && x.state != null && x.state !== 0 && x.state !== '');
+        state = checked ? (checked.value != null ? checked.value : checked.state) : '';
+      }
+      if (state && typeof state === 'object') state = state.value != null ? state.value : state.state;
+      state = state == null ? '' : String(state);
+
+      if (type.includes('letter') || type.includes('letra')) out.letter = state;
+      else if (type.includes('year') || type.includes('ano')) out.year = state;
+      else if (type.includes('score') || type.includes('nota')) out.score = state;
+      else if (type.includes('rating') || type.includes('class')) out.rating = state;
+    }
+    return out;
   }
 
   parseGenres(doc) {
@@ -453,7 +515,7 @@ class DefaultExtension extends MProvider {
 
     const slug = match[1];
     const episode = match[2];
-    const hosts = ['https://animefire.plus', 'https://animefire.io'];
+    const hosts = ['https://animefire.plus', 'https://animefire.io', 'https://www.animefire.plus', 'https://www.animefire.io'];
     const videos = [];
     const seen = new Set();
 
@@ -508,24 +570,31 @@ class DefaultExtension extends MProvider {
         let json = null;
         try { json = JSON.parse(body); } catch (_) {}
 
-        if (json && Array.isArray(json.data)) {
-          console.log('AnimeFire video sources: ' + json.data.length);
-          for (const item of json.data) {
-            if (!item) continue;
-            addVideo(item.src || item.url || item.file || item.video, item.label || item.resolution);
+        const scanJson = (node, hint) => {
+          if (node == null) return;
+          if (typeof node === 'string') {
+            if (/^https?:\/\//i.test(node)) addVideo(node, hint || 'Fonte');
+            return;
           }
-        }
+          if (Array.isArray(node)) {
+            for (const item of node) scanJson(item, hint);
+            return;
+          }
+          if (typeof node !== 'object') return;
 
-        // Some versions return a JSON string nested in a field.
-        if (json && typeof json.data === 'string') {
-          const nested = this.extractMedia(json.data);
-          for (const mediaUrl of nested) addVideo(mediaUrl, 'Fonte');
-        }
+          const label = node.label || node.quality || node.resolution || node.name || hint || 'Fonte';
+          const directKeys = ['src','url','file','video','stream','streamUrl','videoUrl','download','contentUrl','link'];
+          for (const key of directKeys) {
+            if (node[key]) addVideo(node[key], label);
+          }
+          for (const key of Object.keys(node)) {
+            if (directKeys.indexOf(key) >= 0) continue;
+            scanJson(node[key], label);
+          }
+        };
 
-        // If the response is not JSON, still search it for media URLs.
-        if (!json) {
-          for (const mediaUrl of this.extractMedia(body)) addVideo(mediaUrl, 'Fonte');
-        }
+        if (json) scanJson(json, 'Fonte');
+        for (const mediaUrl of this.extractMedia(body)) addVideo(mediaUrl, 'Fonte');
       } catch (error) {
         console.log('AnimeFire video endpoint: ' + error);
       }
@@ -534,8 +603,21 @@ class DefaultExtension extends MProvider {
     // 2) Fallback: inspect the episode page and its public player frames.
     if (videos.length === 0) {
       try {
-        const first = await this.document(url, this.base + '/');
-        for (const mediaUrl of this.extractMedia(first.body)) addVideo(mediaUrl, 'Fonte');
+        const pageUrls = [url];
+        const alternate = url.replace(/^https:\/\/animefire\.io/i, 'https://animefire.plus').replace(/^https:\/\/www\.animefire\.io/i, 'https://animefire.plus');
+        if (alternate !== url) pageUrls.push(alternate);
+
+        let first = null;
+        for (const pageUrl of pageUrls) {
+          try {
+            first = await this.document(pageUrl, this.base + '/');
+            for (const mediaUrl of this.extractMedia(first.body)) addVideo(mediaUrl, 'Fonte');
+            if (videos.length > 0) break;
+          } catch (error) {
+            console.log('AnimeFire alternate episode page: ' + error);
+          }
+        }
+        if (!first) throw new Error('AnimeFire: não foi possível abrir a página do episódio');
 
         const frames = this.iframeUrls(first.doc);
         for (const frame of frames.slice(0, 8)) {

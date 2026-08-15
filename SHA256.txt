@@ -1,1 +1,1 @@
-80e2ec231f6a25493ed6a4190a28ef82ca20b5afedcdf4fa8bef10317356a52c  /mnt/data/AnimeFire-Mangayomi-0.8.3-STABLE-COMBINED-0.3.7.zip
+8f3aa51e8e7852b29d6f5ce692ad08c9ae365fbd6a479fd4670f5e847a958cb7  AnimeFire-Mangayomi-0.8.3-STABLE-FILTER-VIDEO-0.3.8.zip
