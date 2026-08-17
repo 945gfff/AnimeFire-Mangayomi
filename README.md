@@ -1,7 +1,5 @@
 # AnimeFire — Mangayomi 0.8.3
 
-Versão 0.3.4.
+Versão 0.4.2.
 
-Esta versão preserva a estrutura global da versão 0.3.3 que eliminou o erro `extention is not defined` e altera somente a extração de vídeo.
-
-O extractor consulta primeiro o endpoint público `/video/{slug}/{episódio}`, que retorna fontes com `src` e `label`, e usa a página do episódio/player como fallback.
+Baseada na versão STABLE-LIGHTSPEED-SAFE 0.4.1. Mantém a estrutura global compatível com Mangayomi 0.8.3 e reforça somente a extração de vídeo, incluindo o formato `data-video-src`/`data-quality`, `<video>/<source>`, Blogger e fontes lightspeed.
