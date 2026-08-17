@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.4.0',
+    version: '0.4.1',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -475,16 +475,10 @@ class DefaultExtension extends MProvider {
     const addVideo = (value, label) => {
       const mediaUrl = cleanVideoUrl(value);
       if (!/^https?:\/\//i.test(mediaUrl)) return;
-
-      // AnimeFire currently uses more than one CDN format. In particular,
-      // some episodes return a lightspeedst.net URL without an .mp4/.m3u8
-      // suffix. Do not treat iframe/page URLs as media; only accept known
-      // media/CDN hosts or explicit media extensions.
       const isMediaExtension = /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(mediaUrl);
       const isGoogleVideo = /(?:^|\.)googlevideo\.com(?:\/|$)/i.test(mediaUrl);
       const isLightspeed = /(?:^|\.)lightspeedst\.net(?:\/|$)/i.test(mediaUrl);
       if (!isMediaExtension && !isGoogleVideo && !isLightspeed) return;
-
       if (seen.has(mediaUrl)) return;
       seen.add(mediaUrl);
       videos.push({
@@ -522,16 +516,12 @@ class DefaultExtension extends MProvider {
         if (json && json.data && Array.isArray(json.data.sources)) items.push.apply(items, json.data.sources);
         if (json && Array.isArray(json.sources)) items.push.apply(items, json.sources);
         if (json && json.source) items.push(json.source);
-
-        if (items.length) {
-          console.log('AnimeFire video sources: ' + items.length);
-          for (const item of items) {
-            if (!item) continue;
-            addVideo(
-              item.src || item.url || item.file || item.video || item.videoUrl || item.stream || item.streamUrl,
-              item.label || item.resolution || item.quality || item.name
-            );
-          }
+        for (const item of items) {
+          if (!item) continue;
+          addVideo(
+            item.src || item.url || item.file || item.video || item.videoUrl || item.stream || item.streamUrl,
+            item.label || item.resolution || item.quality || item.name
+          );
         }
 
         // Some versions return a JSON string nested in a field.
@@ -561,10 +551,6 @@ class DefaultExtension extends MProvider {
           try {
             const nested = await this.document(frame, url);
             for (const mediaUrl of this.extractMedia(nested.body)) addVideo(mediaUrl, 'Fonte');
-            // Also inspect explicit video/source elements in the nested player.
-            for (const el of nested.doc.select('video source[src], video[src]')) {
-              addVideo(el.attr('src'), 'Fonte');
-            }
           } catch (error) {
             console.log('AnimeFire player: ' + error);
           }

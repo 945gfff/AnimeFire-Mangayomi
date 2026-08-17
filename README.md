@@ -1,8 +1,7 @@
-AnimeFire Mangayomi 0.8.3 - Video Fix 0.4.0
+# AnimeFire — Mangayomi 0.8.3
 
-Base: stable combined 0.3.7.
-Changes limited to video source detection:
-- accepts AnimeFire lightspeedst.net CDN URLs even without a file extension;
-- accepts common JSON source layouts;
-- does not treat iframe/page URLs as playable media;
-- keeps the existing extention/search/episode structure unchanged.
+Versão 0.3.4.
+
+Esta versão preserva a estrutura global da versão 0.3.3 que eliminou o erro `extention is not defined` e altera somente a extração de vídeo.
+
+O extractor consulta primeiro o endpoint público `/video/{slug}/{episódio}`, que retorna fontes com `src` e `label`, e usa a página do episódio/player como fallback.
