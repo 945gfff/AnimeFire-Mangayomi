@@ -7,7 +7,7 @@ var mangayomiSources = [
     iconUrl: 'https://animefire.io/favicon.ico',
     typeSource: 'single',
     itemType: 1,
-    version: '0.3.9',
+    version: '0.4.0',
     dateFormat: '',
     dateFormatLocale: 'pt-br',
     pkgPath: 'anime/src/pt-br/animefire.js',
@@ -191,35 +191,18 @@ class DefaultExtension extends MProvider {
       .replace(/^-+|-+$/g, '');
   }
 
-  async search(query, page, filters) {
+  async search(query, page) {
     const currentPage = Math.max(1, Number(page || 1));
     const keyword = String(query || '').trim();
-    const f = this.readFilters(filters);
-    const hasFilters = !!(f.letter || f.year || f.score || f.rating);
-
-    if (hasFilters) {
-      let baseUrl = this.base + '/top-animes';
-      if (f.letter) baseUrl += '/' + encodeURIComponent(f.letter.toLowerCase());
-      const params = [];
-      if (f.letter) params.push('letra=' + encodeURIComponent(f.letter.toLowerCase()));
-      if (f.year) params.push('ano=' + encodeURIComponent(f.year));
-      if (f.score) params.push('score=' + encodeURIComponent(f.score));
-      if (f.rating) params.push('classificacao=' + encodeURIComponent(f.rating));
-      if (currentPage > 1) params.push('page=' + currentPage);
-      const url = baseUrl + (params.length ? '?' + params.join('&') : '');
-      const result = await this.listPage(url, currentPage);
-      if (!keyword) return result;
-      const needle = keyword.toLowerCase();
-      const filtered = result.list.filter((item) => String(item.name || '').toLowerCase().includes(needle));
-      return { list: filtered, hasNextPage: filtered.length > 0 && result.hasNextPage };
-    }
-
     if (!keyword) return { list: [], hasNextPage: false };
+
     const slug = this.slugifySearch(keyword);
     const encoded = encodeURIComponent(keyword);
     const candidates = [];
+
     if (slug) candidates.push(this.base + '/pesquisar/' + slug);
     if (encoded && encoded !== slug) candidates.push(this.base + '/pesquisar/' + encoded);
+
     const compact = slug.replace(/-/g, '');
     if (compact && compact !== slug) candidates.push(this.base + '/pesquisar/' + compact);
 
@@ -232,48 +215,12 @@ class DefaultExtension extends MProvider {
         console.log('AnimeFire search candidate: ' + error);
       }
     }
+
     return { list: [], hasNextPage: false };
   }
 
   getFilterList() {
-    const options = (values) => values.map((value) => ({ type_name: 'SelectOption', name: value || 'Todos', value }));
-    const letters = ['','A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z'];
-    const years = ['','2026','2025','2024','2023','2022','2021','2020','2019','2018','2017','2016','2015','2014','2013','2012','2011','2010','2009','2008','2007','2006','2005','2004','2003','2002','2001','2000'];
-    const scores = ['','9','8','7','6','5','4','3','2','1'];
-    return [
-      { type_name: 'SelectFilter', type: 'letter', name: 'Letra', state: 0, values: options(letters) },
-      { type_name: 'SelectFilter', type: 'year', name: 'Ano', state: 0, values: options(years) },
-      { type_name: 'SelectFilter', type: 'score', name: 'Score mínimo', state: 0, values: options(scores) },
-      { type_name: 'SelectFilter', type: 'rating', name: 'Classificação', state: 0, values: options(['','L','A10','A14','A16','A18']) },
-    ];
-  }
-
-  readFilters(filters) {
-    const out = { letter: '', year: '', score: '', rating: '' };
-    if (!Array.isArray(filters)) return out;
-    const readOne = (group) => {
-      if (!group) return '';
-      const state = group.state;
-      if (Array.isArray(state)) {
-        const selected = state.find((item) => item && (item.state === true || Number(item.state) > 0));
-        return selected ? String(selected.value || selected.state || '') : '';
-      }
-      if (state && typeof state === 'object') return String(state.value != null ? state.value : (state.state != null ? state.state : ''));
-      if (typeof state === 'number') {
-        if (Array.isArray(group.values) && group.values[state]) return String(group.values[state].value || '');
-        return state > 0 ? String(state) : '';
-      }
-      return String(state == null ? '' : state);
-    };
-    for (const group of filters) {
-      const type = String(group && (group.type || group.name || group.type_name) || '').toLowerCase();
-      const value = readOne(group);
-      if (type.includes('letter') || type.includes('letra')) out.letter = value;
-      else if (type.includes('year') || type.includes('ano')) out.year = value;
-      else if (type.includes('score') || type.includes('nota')) out.score = value;
-      else if (type.includes('rating') || type.includes('class')) out.rating = value;
-    }
-    return out;
+    return [];
   }
 
   parseGenres(doc) {
@@ -528,9 +475,16 @@ class DefaultExtension extends MProvider {
     const addVideo = (value, label) => {
       const mediaUrl = cleanVideoUrl(value);
       if (!/^https?:\/\//i.test(mediaUrl)) return;
-      const isDirect = /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(mediaUrl) || /googlevideo\.com/i.test(mediaUrl);
-      const isBlogger = /(?:blogger\.com\/video\.g\?token=|blogspot\.com)/i.test(mediaUrl);
-      if (!isDirect && !isBlogger) return;
+
+      // AnimeFire currently uses more than one CDN format. In particular,
+      // some episodes return a lightspeedst.net URL without an .mp4/.m3u8
+      // suffix. Do not treat iframe/page URLs as media; only accept known
+      // media/CDN hosts or explicit media extensions.
+      const isMediaExtension = /\.(?:mp4|m3u8|m3u)(?:[?#]|$)/i.test(mediaUrl);
+      const isGoogleVideo = /(?:^|\.)googlevideo\.com(?:\/|$)/i.test(mediaUrl);
+      const isLightspeed = /(?:^|\.)lightspeedst\.net(?:\/|$)/i.test(mediaUrl);
+      if (!isMediaExtension && !isGoogleVideo && !isLightspeed) return;
+
       if (seen.has(mediaUrl)) return;
       seen.add(mediaUrl);
       videos.push({
@@ -562,11 +516,21 @@ class DefaultExtension extends MProvider {
         let json = null;
         try { json = JSON.parse(body); } catch (_) {}
 
-        if (json && Array.isArray(json.data)) {
-          console.log('AnimeFire video sources: ' + json.data.length);
-          for (const item of json.data) {
+        const items = [];
+        if (Array.isArray(json)) items.push.apply(items, json);
+        if (json && Array.isArray(json.data)) items.push.apply(items, json.data);
+        if (json && json.data && Array.isArray(json.data.sources)) items.push.apply(items, json.data.sources);
+        if (json && Array.isArray(json.sources)) items.push.apply(items, json.sources);
+        if (json && json.source) items.push(json.source);
+
+        if (items.length) {
+          console.log('AnimeFire video sources: ' + items.length);
+          for (const item of items) {
             if (!item) continue;
-            addVideo(item.src || item.url || item.file || item.video, item.label || item.resolution);
+            addVideo(
+              item.src || item.url || item.file || item.video || item.videoUrl || item.stream || item.streamUrl,
+              item.label || item.resolution || item.quality || item.name
+            );
           }
         }
 
@@ -589,25 +553,18 @@ class DefaultExtension extends MProvider {
     if (videos.length === 0) {
       try {
         const first = await this.document(url, this.base + '/');
-        for (const el of first.doc.select('[data-video-src]')) {
-          addVideo(el.attr('data-video-src'), el.attr('data-quality') || 'Fonte');
-        }
-        for (const el of first.doc.select('video source[src], video[src]')) {
-          addVideo(el.attr('src'), 'Fonte');
-        }
-        for (const el of first.doc.select('iframe[src], iframe[data-src]')) {
-          addVideo(el.attr('src') || el.attr('data-src'), 'Player');
-        }
         for (const mediaUrl of this.extractMedia(first.body)) addVideo(mediaUrl, 'Fonte');
 
         const frames = this.iframeUrls(first.doc);
         for (const frame of frames.slice(0, 8)) {
           if (videos.length >= 12) break;
-          addVideo(frame, 'Player');
-          if (videos.length >= 12) break;
           try {
             const nested = await this.document(frame, url);
             for (const mediaUrl of this.extractMedia(nested.body)) addVideo(mediaUrl, 'Fonte');
+            // Also inspect explicit video/source elements in the nested player.
+            for (const el of nested.doc.select('video source[src], video[src]')) {
+              addVideo(el.attr('src'), 'Fonte');
+            }
           } catch (error) {
             console.log('AnimeFire player: ' + error);
           }
